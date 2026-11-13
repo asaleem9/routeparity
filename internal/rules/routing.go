@@ -9,11 +9,12 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 
 	"github.com/asaleem9/routeparity/internal/model"
+	"github.com/asaleem9/routeparity/internal/pathgen"
 )
 
 // trailingSlashRedirect covers the redirect nginx adds for a location that
 // ends in a slash.
-type trailingSlashRedirect struct{ auditOnly }
+type trailingSlashRedirect struct{ noExplain }
 
 func (trailingSlashRedirect) Meta() Meta {
 	return Meta{
@@ -27,44 +28,61 @@ func (trailingSlashRedirect) Meta() Meta {
 	}
 }
 
+// slashCandidate is a path ending in a slash whose slashless form has no rule
+// of its own, so ingress-nginx answers the slashless request itself.
+type slashCandidate struct {
+	rule model.PathRule
+	// source is the path without its trailing slash.
+	source string
+	// covering is a broader Prefix path that also matches source, or "".
+	covering string
+}
+
+func slashCandidates(h *model.Host) []slashCandidate {
+	if h.RegexMode() {
+		return nil // regex locations get no implicit redirect
+	}
+	literal := map[string]bool{}
+	var prefixes []string
+	for _, p := range h.Paths {
+		if p.Canary || !isLiteral(p.PathType) {
+			continue
+		}
+		literal[p.EffectivePath()] = true
+		if p.PathType == networkingv1.PathTypePrefix {
+			prefixes = append(prefixes, p.EffectivePath())
+		}
+	}
+
+	var out []slashCandidate
+	reported := map[string]bool{}
+	for _, p := range h.Paths {
+		if p.Canary || !isLiteral(p.PathType) {
+			continue
+		}
+		source, ok := pathgen.StripSlash(p.EffectivePath())
+		if !ok || literal[source] || reported[source] {
+			continue // the slashless path has its own rule, or was already listed
+		}
+		reported[source] = true
+		out = append(out, slashCandidate{rule: p, source: source, covering: coveringPrefix(prefixes, source)})
+	}
+	return out
+}
+
 func (r trailingSlashRedirect) Audit(w *model.World) []model.Finding {
 	var out []model.Finding
 	for _, h := range w.Hosts {
-		if h.RegexMode() {
-			continue // regex locations get no implicit redirect
-		}
-		literal := map[string]bool{}
-		var prefixes []string
-		for _, p := range h.Paths {
-			if p.Canary || !isLiteral(p.PathType) {
-				continue
-			}
-			literal[p.EffectivePath()] = true
-			if p.PathType == networkingv1.PathTypePrefix {
-				prefixes = append(prefixes, p.EffectivePath())
-			}
-		}
-
-		reported := map[string]bool{}
-		for _, p := range h.Paths {
-			path := p.EffectivePath()
-			if p.Canary || !isLiteral(p.PathType) || path == "/" || !strings.HasSuffix(path, "/") {
-				continue
-			}
-			source := strings.TrimSuffix(path, "/")
-			if source == "" || literal[source] || reported[source] {
-				continue // the slashless path has its own rule, or was already reported
-			}
-			reported[source] = true
-
-			f := predicted(r.Meta(), h, p, fmt.Sprintf(
+		for _, c := range slashCandidates(h) {
+			path := c.rule.EffectivePath()
+			f := predicted(r.Meta(), h, c.rule, fmt.Sprintf(
 				"ingress-nginx answers %q with a 301 redirect to %q. Without an explicit redirect the Gateway returns 404 for %q.",
-				source, path, source))
+				c.source, path, c.source))
 			f.Fix = &model.Fix{
 				Summary: "Add a rule that redirects the slashless path.",
-				Snippet: fmt.Sprintf("- matches:\n  - path:\n      type: Exact\n      value: %q\n  filters:\n  - type: RequestRedirect\n    requestRedirect:\n      statusCode: 301\n      path:\n        type: ReplaceFullPath\n        replaceFullPath: %q\n", source, path),
+				Snippet: fmt.Sprintf("- matches:\n  - path:\n      type: Exact\n      value: %q\n  filters:\n  - type: RequestRedirect\n    requestRedirect:\n      statusCode: 301\n      path:\n        type: ReplaceFullPath\n        replaceFullPath: %q\n", c.source, path),
 			}
-			if covering := coveringPrefix(prefixes, source); covering != "" {
+			if c.covering != "" {
 				// The documented behaviour is for a path with no other match.
 				// Whether nginx still redirects when a broader prefix also
 				// matches is not documented, so this is reported as uncertain.
@@ -72,7 +90,7 @@ func (r trailingSlashRedirect) Audit(w *model.World) []model.Finding {
 				f.Message = fmt.Sprintf(
 					"%q is also matched by the Prefix path %q on this host. ingress-nginx may answer %q with a 301 redirect to %q "+
 						"or route it to the broader path; a Gateway will route it to the broader path. Confirm which you rely on.",
-					source, covering, source, path)
+					c.source, c.covering, c.source, path)
 				f.Fix = nil
 			}
 			out = append(out, f)
@@ -100,7 +118,7 @@ func coveringPrefix(prefixes []string, path string) string {
 }
 
 // urlNormalisation covers path normalisation before matching.
-type urlNormalisation struct{ auditOnly }
+type urlNormalisation struct{ noExplain }
 
 func (urlNormalisation) Meta() Meta {
 	return Meta{
@@ -132,7 +150,10 @@ func (r urlNormalisation) Audit(w *model.World) []model.Finding {
 
 // sslRedirect covers the HTTP to HTTPS redirect ingress-nginx adds for hosts
 // with TLS.
-type sslRedirect struct{ auditOnly }
+type sslRedirect struct {
+	noProbes
+	noExplain
+}
 
 func (sslRedirect) Meta() Meta {
 	return Meta{
@@ -194,7 +215,10 @@ func (r sslRedirect) Audit(w *model.World) []model.Finding {
 }
 
 // pathConflict covers the same host and path being claimed by two Ingresses.
-type pathConflict struct{ auditOnly }
+type pathConflict struct {
+	noProbes
+	noExplain
+}
 
 func (pathConflict) Meta() Meta {
 	return Meta{

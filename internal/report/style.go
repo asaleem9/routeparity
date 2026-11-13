@@ -41,6 +41,19 @@ func (s Style) Bold(text string) string { return s.paint("1", text) }
 // Dim de-emphasises text.
 func (s Style) Dim(text string) string { return s.paint("2", text) }
 
+// Verdict colours a verdict label. As with severities, the text carries the
+// meaning and colour only reinforces it.
+func (s Style) Verdict(v model.Verdict, text string) string {
+	switch v {
+	case model.VerdictDiff:
+		return s.paint("1;31", text)
+	case model.VerdictMatch:
+		return s.paint("32", text)
+	default:
+		return s.paint("33", text)
+	}
+}
+
 // Severity colours a severity label. The label text always carries the
 // meaning; colour only reinforces it.
 func (s Style) Severity(sev model.Severity, text string) string {

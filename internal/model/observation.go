@@ -7,7 +7,8 @@ type ClientView struct {
 	// Status is the HTTP status code, or zero when no response arrived.
 	Status int    `json:"status"`
 	Proto  string `json:"proto,omitempty"`
-	// Headers are the response headers in the order received.
+	// Headers are the response headers sorted by name. Repeated headers
+	// keep the order they arrived in.
 	Headers    []Header `json:"headers,omitempty"`
 	BodyLen    int64    `json:"bodyLen"`
 	BodySHA256 string   `json:"bodySHA256,omitempty"`

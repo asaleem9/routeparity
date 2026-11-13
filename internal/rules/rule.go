@@ -42,12 +42,17 @@ const (
 	refI2GWProvider   = "https://github.com/kubernetes-sigs/ingress2gateway/blob/main/pkg/i2gw/providers/ingressnginx/README.md"
 )
 
-// auditOnly is embedded by rules whose probes and explanations are not
-// written yet, so that each rule file only contains what it implements.
-type auditOnly struct{}
+// noProbes is embedded by rules that have no probes of their own: their
+// behaviour is either visible on the probes derived from the configuration or
+// cannot be exercised by a request.
+type noProbes struct{}
 
-func (auditOnly) Probes(*model.World) []model.Probe                     { return nil }
-func (auditOnly) Explain(model.Comparison, *model.World) *model.Finding { return nil }
+func (noProbes) Probes(*model.World) []model.Probe { return nil }
+
+// noExplain is embedded by rules whose explanations are not written yet.
+type noExplain struct{}
+
+func (noExplain) Explain(model.Comparison, *model.World) *model.Finding { return nil }
 
 // All returns every rule, ordered by ID.
 func All() []Rule {

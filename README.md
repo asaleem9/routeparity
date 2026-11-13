@@ -6,11 +6,12 @@ ingress-nginx was retired in March 2026, and a lot of clusters are moving to Gat
 
 ## Status
 
-This is early. One command works today:
+This is early. Two things work today:
 
 - `routeparity audit` reads your Ingress manifests and predicts where a Gateway will behave differently. It sends no traffic.
+- `routeparity live` sends the same requests to two endpoints and compares what each did. `record` and `diff` do the same in two steps, with a snapshot file in between.
 
-The part I'm building toward is the comparison itself: send the same requests through both setups, diff what the client saw and what the backend received, and name the cause of each difference. That is not built yet. The [roadmap](#roadmap) has the order.
+What's missing is the part that sets up the comparison for you: a command that starts a local cluster with both proxies and stand-in backends. Today that is a script. The [roadmap](#roadmap) has the order.
 
 ## Install
 
@@ -26,7 +27,7 @@ cd routeparity
 make build        # writes bin/routeparity
 ```
 
-## Usage
+## Audit your manifests
 
 Point `audit` at files, a directory, or stdin:
 
@@ -73,27 +74,85 @@ Summary: 4 high · 7 medium · 1 low · 0 info
 
 `routeparity explain` lists the rules, and `routeparity explain NGX-REGEX-002` describes one with its sources.
 
-### Flags
+`--fail-on` sets the lowest severity that makes `audit` exit 1 (`medium` by default, `none` to never fail). `--emitter envoy-gateway` shows the converter's warnings for that emitter instead of the standard one. `routeparity audit --help` lists the rest.
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `-f, --filename` | required | File, directory, or `-` for stdin. Repeatable. |
-| `--ingress-class` | `nginx` | Audit Ingresses of this class. |
-| `--include-classless` | off | Also audit Ingresses that name no class. |
-| `--emitter` | `standard` | ingress2gateway emitter whose warnings to include (`standard`, `envoy-gateway`). |
-| `--no-convert` | off | Skip running ingress2gateway. |
-| `-o, --output` | `text` | `text` or `json`. |
-| `--fail-on` | `medium` | Lowest severity that makes the command exit 1: `high`, `medium`, `low`, `info`, or `none`. |
+## Compare two endpoints
+
+`live` takes the same manifests and two addresses: the setup you have and the one replacing it.
+
+```sh
+routeparity live -f manifests/ --baseline 203.0.113.10:80 --candidate 203.0.113.20:80 --mutations
+```
+
+It builds requests from your Ingress rules, sends each one to both addresses with the Host header set, and compares the answers. Redirects are not followed, and each request is written to the socket as is, so `/a/../b` arrives as `/a/../b`.
+
+This is a run against real ingress-nginx 1.15.1 and Envoy Gateway 1.10.0, with an Ingress that sets `use-regex` on the path `/[A-Z]{3}` and an HTTPRoute translated literally:
+
+```console
+$ routeparity live -f ingress.yaml --baseline 127.0.0.1:18080 --candidate 127.0.0.1:18081 --mutations
+routeparity diff  baseline (ingress-nginx, 127.0.0.1:18080)  →  candidate (gateway-api, 127.0.0.1:18081)
+  8 probes · 2 match · 6 differ · 0 unrouted · 0 unverified · 0 failed
+
+DIFF        GET http://regex-match.example.com/%41AA
+            NGX-NORM-001, percent-encoded  ·  Ingress/demo/regex-match
+            backend.rawTarget  /%41AA  →  /AAA
+
+DIFF        GET http://regex-match.example.com//AAA
+            NGX-NORM-001, double-slash  ·  Ingress/demo/regex-match
+            backend.rawTarget  //AAA  →  /AAA
+
+DIFF        GET http://regex-match.example.com/aaa
+            NGX-REGEX-001, case-flip  ·  Ingress/demo/regex-match
+            routed           routed  →  not routed
+            client.status    200  →  404
+            backend.reached  demo/httpbin:8000  →  not reached
+
+...
+
+Result: The candidate behaves differently from the baseline on 6 probes.
+```
+
+Each difference names the rule that produced the request, so `routeparity explain NGX-REGEX-001` tells you what you're looking at.
+
+The first two are the ones a status check misses. Both proxies return 200. ingress-nginx forwarded the path as the client sent it, and Envoy Gateway decoded and normalised it first. The `backend.*` lines appear because the backend in that cluster was `routeparity-echo`, which reports the request it received. Against your real services you get the client's side only, and the report says so.
+
+### Without `--mutations`
+
+By default `live` only requests the paths written in your manifests. That is the polite setting for a production endpoint, and it found nothing in the run above: 2 probes, 2 matches. The differences were all on requests one step away from a configured path, which is what `--mutations` adds: the path in different case, with an extra segment, with and without a trailing slash, with dot segments, a doubled slash, or a percent-encoded letter. They are GET requests, but a WAF may not like them, so it is opt-in.
+
+`routeparity probes -f manifests/ --mutations` lists what would be sent without sending anything.
+
+### Snapshots
+
+`record` saves one endpoint's behaviour to a file, and `diff` compares two files:
+
+```sh
+routeparity record -f manifests/ --address 203.0.113.10:80 --name old --mutations -o old.json
+routeparity record -f manifests/ --address 203.0.113.20:80 --name new --mutations -o new.json
+routeparity diff old.json new.json
+```
+
+A snapshot of ingress-nginx is worth keeping. It is the reference for the behaviour you had, and it still works after the controller is gone.
+
+### What counts as a difference
+
+- Status code, and whether the request was routed at all. Each run also sends one request that nothing should route, so it knows what each proxy's "no route" answer looks like. An application's 404 and a proxy's 404 are told apart that way.
+- Where a redirect points, after resolving it. `/app/` and `http://host:8080/app/` are the same redirect.
+- `Set-Cookie` names and attributes, HSTS, `WWW-Authenticate` and the CORS response headers.
+- With the echo backend: which Service received the request, and the method, path and Host it saw.
+
+Other response headers, such as `Server`, differ between any two proxies. Those are counted and listed at the end of the report without failing the run. Response bodies are compared only with `--compare-body`, because real backends put per-request data in them.
+
+Two results are never reported as a match. If neither endpoint routes a path that comes from your manifests, the verdict is `UNROUTED`: the likely cause is a wrong address or routes that never loaded. If an endpoint doesn't answer, the verdict is `ERROR`, even when both fail the same way.
 
 ### Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | No finding at or above `--fail-on`. |
-| 1 | At least one finding at or above `--fail-on`. |
-| 3 | The tool could not finish, for example because a file was unreadable. |
-
-Code 2 is reserved for the comparison commands.
+| Code | `audit` | `live` and `diff` |
+|---|---|---|
+| 0 | No finding at or above `--fail-on`. | Nothing differs. |
+| 1 | A finding at or above `--fail-on`. | Something differs. |
+| 2 | Not used. | With `--strict`: nothing differs, but something could not be verified. |
+| 3 | The tool could not finish. | The tool could not finish. |
 
 ## Rules
 
@@ -120,34 +179,31 @@ Every finding is a prediction. The audit reads manifests, and three things that 
 - Your controller's ConfigMap and flags, which change ingress-nginx's defaults.
 - Whether the Gateway side already compensates. ingress2gateway 1.x translates the regex and trailing-slash behaviours itself; a hand-written HTTPRoute may not.
 
-An audit with no findings does not mean the two setups match. Measuring that is what the comparison commands are for.
+An audit with no findings does not mean the two setups match. Measuring that is what `live` is for.
 
-## A preview of the comparison
+## Try it on a laptop
 
-`hack/lab-spike.sh` is a script version of where this is going. It starts a kind cluster with ingress-nginx and Envoy Gateway side by side, puts the same echo backend behind both, and sends each request through each proxy. The Ingress uses `use-regex` with the path `/[A-Z]{3}`, and the HTTPRoute is the literal translation. It takes about a minute once the images are cached.
+`hack/lab-spike.sh` starts a kind cluster with ingress-nginx and Envoy Gateway side by side and puts `routeparity-echo` behind both. It needs Docker, kind and kubectl, and takes about a minute once the images are cached.
 
-```console
-$ hack/lab-spike.sh
-request                ingress-nginx                      envoy gateway
-GET /ABC               200 backend-saw=/ABC               200 backend-saw=/ABC
-GET /uuid              200 backend-saw=/uuid              404 backend-saw=-
-GET /abc/def           200 backend-saw=/abc/def           404 backend-saw=-
-GET /AB                404 backend-saw=-                  404 backend-saw=-
-GET /a/../ABC          200 backend-saw=/a/../ABC          200 backend-saw=/ABC
-GET //ABC              200 backend-saw=//ABC              200 backend-saw=/ABC
-
-versions: kubernetes v1.35.8, ingress-nginx controller-v1.15.1, envoy gateway v1.10.0
+```sh
+KEEP=1 hack/lab-spike.sh     # prints a small comparison of its own, then leaves the cluster up
 ```
 
-`/uuid` and `/abc/def` are `NGX-REGEX-001` happening for real: ingress-nginx serves them and the Gateway returns 404.
+With the cluster up, port-forward the two proxies and point `live` at them. That is how the output above was produced. Delete the cluster with `kind delete cluster --name routeparity-spike`.
 
-The last two rows are why the backend's view matters. Both proxies answer 200, so a comparison of status codes calls them a match. The backend disagrees: ingress-nginx forwarded the path as the client sent it, and Envoy Gateway forwarded the normalised one. An application that signs or logs the raw path would see the difference.
+## What `live` doesn't do yet
+
+- It speaks HTTP/1.1. No HTTP/2 and no gRPC.
+- It sends GET requests. Behaviour that only shows on other methods or on request bodies, such as a body size limit or a CORS preflight, is not exercised.
+- Weighted canaries are random per request, so they need many requests and a statistical comparison.
+- Patterns that only PCRE accepts, such as lookaheads, can't be turned into a matching path. They are listed as not verified.
+- It doesn't explain a difference beyond naming the rule. Fix suggestions are in `audit` for now.
 
 ## Roadmap
 
-1. `live`: send the same requests to two reachable endpoints and diff the responses.
-2. `record` and `verify`: save one setup's behaviour to a file and check another setup, or a later version of the same one, against it.
-3. `lab`: start a local kind cluster with ingress-nginx and a Gateway implementation, replace every backend with an echo server, and diff what each backend received. Nothing touches production.
+1. `verify`: check an endpoint against a saved snapshot in one step, with JUnit output for CI.
+2. `lab`: do what the script does as a command, from your own manifests, with every backend replaced by the echo. Nothing touches production.
+3. Explanations and fixes attached to each observed difference.
 4. A published table of how Envoy Gateway, NGINX Gateway Fabric and Istio each differ from ingress-nginx, regenerated on a schedule.
 
 ## Development
