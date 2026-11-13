@@ -21,6 +21,38 @@ type Options struct {
 	// by default because real backends put request-specific data in bodies;
 	// with it off, a differing body is recorded as suppressed.
 	CompareBody bool
+	// IgnoreHeaders are response headers whose differences are never counted,
+	// including ones that are significant by default. They are still recorded
+	// as suppressed, so ignoring a header is visible in every report.
+	IgnoreHeaders []string
+	// CompareHeaders are extra response headers to treat as significant.
+	CompareHeaders []string
+}
+
+// headerPolicy decides which response headers count.
+type headerPolicy struct {
+	ignore  map[string]bool
+	compare map[string]bool
+}
+
+func (o Options) headers() headerPolicy {
+	p := headerPolicy{ignore: map[string]bool{}, compare: map[string]bool{}}
+	for _, name := range o.IgnoreHeaders {
+		p.ignore[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	for _, name := range o.CompareHeaders {
+		p.compare[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	return p
+}
+
+// significant reports whether a difference in the named header is a
+// divergence. name is lower case.
+func (p headerPolicy) significant(name string) bool {
+	if p.ignore[name] {
+		return false
+	}
+	return name == "location" || significantHeaders[name] || p.compare[name]
 }
 
 // Summary counts verdicts.
@@ -104,11 +136,19 @@ func Compare(base, cand *model.Snapshot, opts Options) *Result {
 			c.Verdict, c.Reason = model.VerdictUnverified, "the probe was not sent to the baseline"
 		case !haveCand:
 			c.Verdict, c.Reason = model.VerdictUnverified, "the probe was not sent to the candidate"
-		case probe.Repeat > 1:
-			c.Verdict = model.VerdictUnverified
-			c.Reason = "the probe is repeated to measure a distribution, which is not compared yet"
 		default:
-			compareOne(&c, b[0], k[0], baseSig, candSig, opts)
+			// A target that answers the same request in more than one way
+			// has no single behaviour to compare. That happens with weighted
+			// canaries, rate limits and unhealthy backends, and comparing one
+			// sample of each side would give a verdict that changes from run
+			// to run.
+			baseAnswers, candAnswers := distinctAnswers(probe, b, baseSig, opts), distinctAnswers(probe, k, candSig, opts)
+			if baseAnswers > 1 || candAnswers > 1 {
+				c.Verdict = model.VerdictUnverified
+				c.Reason = unstableReason(baseAnswers, len(b), candAnswers, len(k))
+			} else {
+				compareOne(&c, b[0], k[0], baseSig, candSig, opts)
+			}
 		}
 		for _, s := range c.Suppressed {
 			res.Suppressed[s.Field]++
@@ -133,6 +173,47 @@ func Compare(base, cand *model.Snapshot, opts Options) *Result {
 		res.Suppressed = nil
 	}
 	return res
+}
+
+// distinctAnswers counts how many different answers one target gave to the
+// attempts of one probe. Two attempts are the same answer when comparing them
+// with each other finds no difference, so stability is judged by exactly the
+// rules that judge parity.
+func distinctAnswers(probe model.Probe, attempts []model.Observation, sig *signature, opts Options) int {
+	var distinct []model.Observation
+	for _, obs := range attempts {
+		known := false
+		for _, d := range distinct {
+			if sameAnswer(probe, d, obs, sig, opts) {
+				known = true
+				break
+			}
+		}
+		if !known {
+			distinct = append(distinct, obs)
+		}
+	}
+	return len(distinct)
+}
+
+func sameAnswer(probe model.Probe, a, b model.Observation, sig *signature, opts Options) bool {
+	if a.Client.Error != "" || b.Client.Error != "" {
+		return a.Client.Error == b.Client.Error
+	}
+	c := model.Comparison{Probe: probe}
+	compareOne(&c, a, b, sig, sig, opts)
+	return c.Verdict != model.VerdictDiff
+}
+
+func unstableReason(baseAnswers, baseAttempts, candAnswers, candAttempts int) string {
+	var parts []string
+	if baseAnswers > 1 {
+		parts = append(parts, fmt.Sprintf("the baseline gave %d different answers to %d identical requests", baseAnswers, baseAttempts))
+	}
+	if candAnswers > 1 {
+		parts = append(parts, fmt.Sprintf("the candidate gave %d different answers to %d identical requests", candAnswers, candAttempts))
+	}
+	return strings.Join(parts, " and ") + ", so there is no single behaviour to compare"
 }
 
 func compareOne(c *model.Comparison, b, k model.Observation, baseSig, candSig *signature, opts Options) {
@@ -166,8 +247,9 @@ func compareOne(c *model.Comparison, b, k model.Observation, baseSig, candSig *s
 			Field: "client.status", Baseline: fmt.Sprint(b.Client.Status), Candidate: fmt.Sprint(k.Client.Status),
 		})
 	}
-	compareLocation(c, b, k)
-	compareResponseHeaders(c, b, k)
+	policy := opts.headers()
+	compareLocation(c, b, k, policy)
+	compareResponseHeaders(c, b, k, policy)
 	compareBackend(c, b, k)
 
 	// Bodies are only comparable when a backend produced both. An echo body
@@ -189,14 +271,14 @@ func compareOne(c *model.Comparison, b, k model.Observation, baseSig, candSig *s
 	}
 }
 
-func compareLocation(c *model.Comparison, b, k model.Observation) {
+func compareLocation(c *model.Comparison, b, k model.Observation, policy headerPolicy) {
 	bl, kl := first(b.Client.Headers, "Location"), first(k.Client.Headers, "Location")
 	if bl == "" && kl == "" {
 		return
 	}
 	br, kr := resolveLocation(c.Probe, bl), resolveLocation(c.Probe, kl)
 	switch {
-	case br != kr:
+	case br != kr && policy.significant("location"):
 		c.Deltas = append(c.Deltas, model.Delta{Field: "client.location", Baseline: bl, Candidate: kl})
 	case bl != kl:
 		// Same destination, written differently: relative against absolute,
@@ -232,7 +314,7 @@ func query(u *url.URL) string {
 	return "?" + u.RawQuery
 }
 
-func compareResponseHeaders(c *model.Comparison, b, k model.Observation) {
+func compareResponseHeaders(c *model.Comparison, b, k model.Observation, policy headerPolicy) {
 	names := map[string]bool{}
 	for _, h := range b.Client.Headers {
 		names[strings.ToLower(h.Name)] = true
@@ -266,7 +348,7 @@ func compareResponseHeaders(c *model.Comparison, b, k model.Observation) {
 			continue
 		}
 		d := model.Delta{Field: "client.header." + name, Baseline: bv, Candidate: kv}
-		if significantHeaders[name] {
+		if policy.significant(name) {
 			c.Deltas = append(c.Deltas, d)
 		} else {
 			c.Suppressed = append(c.Suppressed, d)
