@@ -29,6 +29,10 @@ type Options struct {
 	// rule-specific variations and the generic ones. They use safe methods,
 	// but a WAF or IDS in front of a live endpoint may object to them.
 	Mutations bool
+	// Samples sends every probe at least this many times, so that a target
+	// which answers inconsistently is detected instead of compared on one
+	// lucky or unlucky sample. Values below one mean once.
+	Samples int
 }
 
 // Set is the result of generation.
@@ -85,6 +89,7 @@ func Generate(w *model.World, opts Options) Set {
 						Host:      rules.ProbeHost(h),
 						RawTarget: target,
 						Origin:    model.Origin{Source: model.OriginDerived, Object: &ref},
+						Repeat:    rules.Repeat(h, p),
 					}
 					if err := probe.Seal(); err != nil {
 						set.Unverified = append(set.Unverified, model.Unverified{
@@ -114,6 +119,12 @@ func Generate(w *model.World, opts Options) Set {
 
 	if control, ok := unroutedControl(w); ok {
 		add(control)
+	}
+
+	for i := range set.Probes {
+		if set.Probes[i].Repeat < opts.Samples {
+			set.Probes[i].Repeat = opts.Samples
+		}
 	}
 
 	sort.SliceStable(set.Probes, func(i, j int) bool {
@@ -161,6 +172,7 @@ func generic(w *model.World) []model.Probe {
 					Host:      rules.ProbeHost(h),
 					RawTarget: v.target,
 					Origin:    model.Origin{Source: model.OriginMutation, Object: &ref, Mutation: v.name},
+					Repeat:    rules.Repeat(h, p),
 				}
 				if err := probe.Seal(); err == nil {
 					out = append(out, probe)

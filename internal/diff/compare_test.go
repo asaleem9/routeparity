@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -341,18 +342,17 @@ func TestCompareIgnoresAControlThatWasRouted(t *testing.T) {
 }
 
 func TestCompareAccountsForEveryProbe(t *testing.T) {
-	sent, onlyBase, repeated := derived(t, "/sent"), derived(t, "/only-in-baseline"), derived(t, "/weighted")
-	repeated.Repeat = 20
+	sent, onlyBase, repeated := derived(t, "/sent"), derived(t, "/only-in-baseline"), derived(t, "/not-sent-anywhere")
 	b := &model.Snapshot{
 		Meta:         model.TargetMeta{Name: "old"},
 		Probes:       []model.Probe{sent, onlyBase, repeated},
-		Observations: []model.Observation{observe(sent, backend("web", "/sent")), observe(onlyBase, backend("web", "/only-in-baseline")), observe(repeated, backend("web", "/weighted"))},
+		Observations: []model.Observation{observe(sent, backend("web", "/sent")), observe(onlyBase, backend("web", "/only-in-baseline"))},
 		Unverified:   []model.Unverified{{Reason: model.ReasonNoProbe, Feature: "shop.example.com /x(?=y)"}},
 	}
 	c := &model.Snapshot{
 		Meta:         model.TargetMeta{Name: "new"},
 		Probes:       []model.Probe{sent, repeated},
-		Observations: []model.Observation{observe(sent, backend("web", "/sent")), observe(repeated, backend("web", "/weighted"))},
+		Observations: []model.Observation{observe(sent, backend("web", "/sent"))},
 		Unverified: []model.Unverified{
 			{Reason: model.ReasonNoProbe, Feature: "shop.example.com /x(?=y)"}, // same as the baseline's
 			{Reason: model.ReasonUnsupported, Feature: "https"},
@@ -409,4 +409,131 @@ func TestSuppressedTotalsAreCounted(t *testing.T) {
 	if res.Suppressed["client.header.server"] != 2 {
 		t.Errorf("suppressed totals = %v, want client.header.server counted on both routed probes", res.Suppressed)
 	}
+}
+
+// attempts builds the observations for one probe sent several times.
+func attempts(p model.Probe, each ...[]obsOpt) []model.Observation {
+	var out []model.Observation
+	for i, opts := range each {
+		o := observe(p, opts...)
+		o.Attempt = i + 1
+		out = append(out, o)
+	}
+	return out
+}
+
+func TestCompareRepeatedProbes(t *testing.T) {
+	main, canary := []obsOpt{backend("web", "/app")}, []obsOpt{backend("web-canary", "/app")}
+	failing := []obsOpt{status(503), body("upstream-error")}
+
+	tests := []struct {
+		name       string
+		base, cand [][]obsOpt
+		want       model.Verdict
+		wantReason string
+	}{
+		{
+			name: "both sides answer the same way every time",
+			base: [][]obsOpt{main, main, main}, cand: [][]obsOpt{main, main, main},
+			want: model.VerdictMatch,
+		},
+		{
+			name: "both sides are stable and differ",
+			base: [][]obsOpt{main, main}, cand: [][]obsOpt{canary, canary},
+			want: model.VerdictDiff,
+		},
+		{
+			name: "a weighted canary on the baseline",
+			base: [][]obsOpt{main, canary, main, main}, cand: [][]obsOpt{main, main, main, main},
+			want: model.VerdictUnverified, wantReason: "the baseline gave 2 different answers to 4 identical requests",
+		},
+		{
+			name: "a flaky candidate that happens to match on the first attempt",
+			base: [][]obsOpt{main, main, main}, cand: [][]obsOpt{main, failing, main},
+			want: model.VerdictUnverified, wantReason: "the candidate gave 2 different answers to 3 identical requests",
+		},
+		{
+			name: "both sides unstable",
+			base: [][]obsOpt{main, canary}, cand: [][]obsOpt{canary, main},
+			want: model.VerdictUnverified, wantReason: "the baseline gave 2 different answers to 2 identical requests and the candidate gave 2",
+		},
+		{
+			name: "a connection that drops on one attempt",
+			base: [][]obsOpt{main, main}, cand: [][]obsOpt{main, {failed("connection-closed")}},
+			want: model.VerdictUnverified, wantReason: "the candidate gave 2 different answers",
+		},
+		{
+			name: "differences that are only noise do not make a side unstable",
+			base: [][]obsOpt{{backend("web", "/app"), header("Date", "Mon")}, {backend("web", "/app"), header("Date", "Tue")}},
+			cand: [][]obsOpt{main, main},
+			want: model.VerdictMatch,
+		},
+		{
+			name: "one side sampled once, the other several times",
+			base: [][]obsOpt{main}, cand: [][]obsOpt{main, main, main},
+			want: model.VerdictMatch,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := derived(t, "/app")
+			p.Repeat = len(tt.base)
+			ctl := control(t)
+			b := &model.Snapshot{Probes: []model.Probe{p, ctl},
+				Observations: append(attempts(p, tt.base...), observe(ctl, status(404), body(nginx404)))}
+			c := &model.Snapshot{Probes: []model.Probe{p, ctl},
+				Observations: append(attempts(p, tt.cand...), observe(ctl, status(404), body(envoy404)))}
+			got := Compare(b, c, Options{}).Comparisons[0]
+			if got.Verdict != tt.want {
+				t.Errorf("verdict = %s, want %s (reason %q)", got.Verdict, tt.want, got.Reason)
+			}
+			if tt.wantReason != "" && !strings.Contains(got.Reason, tt.wantReason) {
+				t.Errorf("reason = %q, want it to contain %q", got.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestHeaderPolicy(t *testing.T) {
+	p := derived(t, "/a")
+	hsts := []obsOpt{backend("web", "/a"), header("Strict-Transport-Security", "max-age=1"), header("X-Frame-Options", "DENY")}
+	bare := []obsOpt{backend("web", "/a")}
+
+	t.Run("default", func(t *testing.T) {
+		b, c := pair(t, p, hsts, bare)
+		got := Compare(b, c, Options{}).Comparisons[0]
+		if diff := cmp.Diff([]string{"client.header.strict-transport-security"}, fields(got.Deltas)); diff != "" {
+			t.Errorf("deltas (-want +got):\n%s", diff)
+		}
+	})
+	t.Run("an ignored header is suppressed, and still recorded", func(t *testing.T) {
+		b, c := pair(t, p, hsts, bare)
+		res := Compare(b, c, Options{IgnoreHeaders: []string{"Strict-Transport-Security"}})
+		got := res.Comparisons[0]
+		if got.Verdict != model.VerdictMatch {
+			t.Errorf("verdict = %s, want MATCH", got.Verdict)
+		}
+		if res.Suppressed["client.header.strict-transport-security"] != 1 {
+			t.Errorf("suppressed = %v, want the ignored header counted", res.Suppressed)
+		}
+	})
+	t.Run("an extra header can be made significant", func(t *testing.T) {
+		b, c := pair(t, p, hsts, bare)
+		got := Compare(b, c, Options{CompareHeaders: []string{" x-frame-options "}}).Comparisons[0]
+		want := []string{"client.header.strict-transport-security", "client.header.x-frame-options"}
+		if diff := cmp.Diff(want, fields(got.Deltas)); diff != "" {
+			t.Errorf("deltas (-want +got):\n%s", diff)
+		}
+	})
+	t.Run("ignoring Location", func(t *testing.T) {
+		b, c := pair(t, mutated(t, "/app"),
+			[]obsOpt{status(301), header("Location", "/app/")}, []obsOpt{status(301), header("Location", "/other/")})
+		if got := Compare(b, c, Options{}).Comparisons[0]; got.Verdict != model.VerdictDiff {
+			t.Fatalf("verdict = %s without the option, want DIFF", got.Verdict)
+		}
+		got := Compare(b, c, Options{IgnoreHeaders: []string{"location"}}).Comparisons[0]
+		if got.Verdict != model.VerdictMatch || len(got.Suppressed) != 1 {
+			t.Errorf("verdict = %s, suppressed = %+v; want MATCH with the redirect recorded as suppressed", got.Verdict, got.Suppressed)
+		}
+	})
 }

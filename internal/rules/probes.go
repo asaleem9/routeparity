@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/asaleem9/routeparity/internal/model"
@@ -38,6 +39,27 @@ func BaseTarget(h *model.Host, p model.PathRule) (string, error) {
 	return p.EffectivePath(), nil
 }
 
+// CanaryRepeat is how many times a probe is sent when a weighted canary
+// splits its path's traffic at random. One sample of a random split says
+// nothing; several show whether the target is stable enough to compare.
+const CanaryRepeat = 10
+
+// Repeat returns how many times a probe for the path should be sent: more
+// than once only when a canary Ingress on the same host and path sends a
+// share of requests elsewhere by weight.
+func Repeat(h *model.Host, p model.PathRule) int {
+	for _, c := range h.Paths {
+		if !c.Canary || c.EffectivePath() != p.EffectivePath() {
+			continue
+		}
+		weight, _ := c.Annotation("canary-weight")
+		if n, err := strconv.Atoi(strings.TrimSpace(weight)); err == nil && n > 0 {
+			return CanaryRepeat
+		}
+	}
+	return 1
+}
+
 // mutation builds a probe that a rule owns. It returns false when the target
 // cannot be sent as a well-formed request.
 func mutation(ruleID string, h *model.Host, p model.PathRule, name, target string) (model.Probe, bool) {
@@ -46,6 +68,7 @@ func mutation(ruleID string, h *model.Host, p model.PathRule, name, target strin
 		Host:      ProbeHost(h),
 		RawTarget: target,
 		Origin:    model.Origin{Source: model.OriginMutation, RuleID: ruleID, Object: &ref, Mutation: name},
+		Repeat:    Repeat(h, p),
 	}
 	if err := probe.Seal(); err != nil {
 		return model.Probe{}, false

@@ -92,8 +92,8 @@ func DiffText(w io.Writer, res *diff.Result, style Style) error {
 		for _, field := range fieldNames {
 			fmt.Fprintf(&b, "  %-44s %s\n", field, plural(res.Suppressed[field], "probe", "probes"))
 		}
-		b.WriteString(wrap("These are response headers that differ between any two proxies, and the forwarding headers each "+
-			"one adds for the backend. Use -o json to see the values.", "  ", textWidth))
+		b.WriteString(wrap("These are response headers that vary between proxies or between requests, such as Date, and the "+
+			"forwarding headers each proxy adds for the backend. Use -o json to see the values.", "  ", textWidth))
 		b.WriteByte('\n')
 	}
 
@@ -104,20 +104,32 @@ func DiffText(w io.Writer, res *diff.Result, style Style) error {
 
 const diffIndent = "            " // aligns under the request, past the verdict column
 
-// conclusion states what the comparison does and does not show. It never
-// claims the two setups are equivalent while anything went unchecked.
+// conclusion states what the comparison does and does not show, wrapped for
+// a terminal.
 func conclusion(res *diff.Result, style Style) string {
-	s := res.Summary
 	var b strings.Builder
+	for i, sentence := range Conclusion(res) {
+		if i == 0 {
+			sentence = style.Bold("Result:") + " " + sentence
+		}
+		b.WriteString(wrap(sentence, "", textWidth))
+	}
+	return b.String()
+}
+
+// Conclusion states, as separate paragraphs, what the comparison found and
+// what it could not check. The first paragraph is the result. It never claims
+// the two setups are equivalent while anything went unchecked.
+func Conclusion(res *diff.Result) []string {
+	s := res.Summary
+	var out []string
 	switch {
 	case s.Diff > 0:
-		b.WriteString(wrap(fmt.Sprintf("%s The candidate behaves differently from the baseline on %s.",
-			style.Bold("Result:"), plural(s.Diff, "probe", "probes")), "", textWidth))
+		out = append(out, fmt.Sprintf("The candidate behaves differently from the baseline on %s.", plural(s.Diff, "probe", "probes")))
 	case s.Match == 0:
-		b.WriteString(wrap(style.Bold("Result:")+" Nothing could be compared.", "", textWidth))
+		out = append(out, "Nothing could be compared.")
 	default:
-		b.WriteString(wrap(fmt.Sprintf("%s No differences on the %s that could be compared.",
-			style.Bold("Result:"), plural(s.Match, "probe", "probes")), "", textWidth))
+		out = append(out, fmt.Sprintf("No differences on the %s that could be compared.", plural(s.Match, "probe", "probes")))
 	}
 	if res.Incomplete() {
 		var gaps []string
@@ -133,18 +145,18 @@ func conclusion(res *diff.Result, style Style) string {
 		if n := len(res.Unverified); n > 0 {
 			gaps = append(gaps, plural(n, "feature was", "features were")+" not exercised at all")
 		}
-		b.WriteString(wrap("This is not a statement of parity: "+strings.Join(gaps, ", ")+".", "", textWidth))
+		out = append(out, "This is not a statement of parity: "+strings.Join(gaps, ", ")+".")
 	}
 	if !sentMutations(res) {
-		b.WriteString(wrap("Only paths written in the manifests were requested. The behaviours that most often differ "+
+		out = append(out, "Only paths written in the manifests were requested. The behaviours that most often differ "+
 			"between proxies show up on other requests, such as a path in different case or with a trailing segment. "+
-			"Record with --mutations to send those.", "", textWidth))
+			"Record with --mutations to send those.")
 	}
 	if res.Baseline.Mode != model.ModeLab || res.Candidate.Mode != model.ModeLab {
-		b.WriteString(wrap("Only what the client received was compared. Whether both proxies sent the backend the same "+
-			"request is not visible from outside.", "", textWidth))
+		out = append(out, "Only what the client received was compared. Whether both proxies sent the backend the same "+
+			"request is not visible from outside.")
 	}
-	return b.String()
+	return out
 }
 
 // sentMutations reports whether the comparison includes any request that

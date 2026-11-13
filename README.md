@@ -10,6 +10,7 @@ This is early. Two things work today:
 
 - `routeparity audit` reads your Ingress manifests and predicts where a Gateway will behave differently. It sends no traffic.
 - `routeparity live` sends the same requests to two endpoints and compares what each did. `record` and `diff` do the same in two steps, with a snapshot file in between.
+- `routeparity verify` checks an endpoint against a saved snapshot, with JUnit and Markdown reports for CI.
 
 What's missing is the part that sets up the comparison for you: a command that starts a local cluster with both proxies and stand-in backends. Today that is a script. The [roadmap](#roadmap) has the order.
 
@@ -134,6 +135,29 @@ routeparity diff old.json new.json
 
 A snapshot of ingress-nginx is worth keeping. It is the reference for the behaviour you had, and it still works after the controller is gone.
 
+`verify` checks an endpoint against a snapshot in one step:
+
+```sh
+routeparity verify old.json --address 203.0.113.20:80
+```
+
+The snapshot carries its own requests, so `verify` needs no manifests. It replays exactly what the baseline was asked, mutations included. Run it after the migration, after a controller upgrade, or on a schedule.
+
+### In CI
+
+```sh
+routeparity verify old.json --address gateway.staging:80 \
+  --samples 3 --strict \
+  --junit report.xml --markdown "$GITHUB_STEP_SUMMARY"
+```
+
+- `--junit` writes one test case per probe. A difference is a failure. Anything unverified is skipped, or a failure with `--strict`, so the file agrees with the exit status.
+- `--markdown` writes a summary with a table of differences, sized for a job summary or a pull request comment.
+- `--samples 3` sends each request three times. An endpoint that answers the same request in more than one way is reported as `UNVERIFIED` with the count, instead of passing or failing on whichever answer came first. That is what keeps a flaky backend from turning into a flaky pipeline.
+- `--strict` exits 2 when nothing differs but something could not be verified.
+
+`-o junit` and `-o markdown` print the same reports to stdout.
+
 ### What counts as a difference
 
 - Status code, and whether the request was routed at all. Each run also sends one request that nothing should route, so it knows what each proxy's "no route" answer looks like. An application's 404 and a proxy's 404 are told apart that way.
@@ -141,13 +165,13 @@ A snapshot of ingress-nginx is worth keeping. It is the reference for the behavi
 - `Set-Cookie` names and attributes, HSTS, `WWW-Authenticate` and the CORS response headers.
 - With the echo backend: which Service received the request, and the method, path and Host it saw.
 
-Other response headers, such as `Server`, differ between any two proxies. Those are counted and listed at the end of the report without failing the run. Response bodies are compared only with `--compare-body`, because real backends put per-request data in them.
+Other response headers, such as `Server`, differ between any two proxies. Those are counted and listed at the end of the report without failing the run. `--compare-header NAME` makes a header count, and `--ignore-header NAME` stops one from counting; an ignored header is still listed. Response bodies are compared only with `--compare-body`, because real backends put per-request data in them.
 
-Two results are never reported as a match. If neither endpoint routes a path that comes from your manifests, the verdict is `UNROUTED`: the likely cause is a wrong address or routes that never loaded. If an endpoint doesn't answer, the verdict is `ERROR`, even when both fail the same way.
+Three results are never reported as a match. If neither endpoint routes a path that comes from your manifests, the verdict is `UNROUTED`: the likely cause is a wrong address or routes that never loaded. If an endpoint doesn't answer, the verdict is `ERROR`, even when both fail the same way. If an endpoint gives different answers to the same request, the verdict is `UNVERIFIED`.
 
 ### Exit codes
 
-| Code | `audit` | `live` and `diff` |
+| Code | `audit` | `live`, `diff` and `verify` |
 |---|---|---|
 | 0 | No finding at or above `--fail-on`. | Nothing differs. |
 | 1 | A finding at or above `--fail-on`. | Something differs. |
@@ -195,16 +219,15 @@ With the cluster up, port-forward the two proxies and point `live` at them. That
 
 - It speaks HTTP/1.1. No HTTP/2 and no gRPC.
 - It sends GET requests. Behaviour that only shows on other methods or on request bodies, such as a body size limit or a CORS preflight, is not exercised.
-- Weighted canaries are random per request, so they need many requests and a statistical comparison.
+- A path behind a weighted canary is requested ten times. If the answers vary, which they should, it is reported as `UNVERIFIED`. Checking that the split itself is the same on both sides needs a statistical comparison, which isn't there. Canaries selected by header or cookie aren't probed with that header or cookie yet.
 - Patterns that only PCRE accepts, such as lookaheads, can't be turned into a matching path. They are listed as not verified.
 - It doesn't explain a difference beyond naming the rule. Fix suggestions are in `audit` for now.
 
 ## Roadmap
 
-1. `verify`: check an endpoint against a saved snapshot in one step, with JUnit output for CI.
-2. `lab`: do what the script does as a command, from your own manifests, with every backend replaced by the echo. Nothing touches production.
-3. Explanations and fixes attached to each observed difference.
-4. A published table of how Envoy Gateway, NGINX Gateway Fabric and Istio each differ from ingress-nginx, regenerated on a schedule.
+1. `lab`: do what the script does as a command, from your own manifests, with every backend replaced by the echo. Nothing touches production.
+2. Explanations and fixes attached to each observed difference.
+3. A published table of how Envoy Gateway, NGINX Gateway Fabric and Istio each differ from ingress-nginx, regenerated on a schedule.
 
 ## Development
 
