@@ -1,0 +1,42 @@
+GET     http://admin.example.com/                                        from the configuration  ·  Ingress/demo/admin
+GET     http://admin.example.com/rp-sub                                  from the configuration  ·  Ingress/demo/admin
+GET     http://path-normalization.example.com/%75uid                     NGX-NORM-001, percent-encoded  ·  Ingress/demo/path-normalization
+GET     http://path-normalization.example.com/./uuid                     NGX-NORM-001, current-dir  ·  Ingress/demo/path-normalization
+GET     http://path-normalization.example.com//uuid                      NGX-NORM-001, double-slash  ·  Ingress/demo/path-normalization
+GET     http://path-normalization.example.com/UUID                       variation: case-flip  ·  Ingress/demo/path-normalization
+GET     http://path-normalization.example.com/rp-x/../uuid               NGX-NORM-001, dot-segment  ·  Ingress/demo/path-normalization
+GET     http://path-normalization.example.com/uuid                       from the configuration  ·  Ingress/demo/path-normalization
+GET     https://path-normalization.example.com/uuid                      from the configuration  ·  Ingress/demo/path-normalization
+GET     http://path-normalization.example.com/uuid/                      variation: add-slash  ·  Ingress/demo/path-normalization
+GET     http://path-normalization.example.com/uuidrp                     variation: segment-boundary  ·  Ingress/demo/path-normalization
+GET     http://regex-match.example.com/%41AA                             NGX-NORM-001, percent-encoded  ·  Ingress/demo/regex-match
+GET     http://regex-match.example.com/%48eader                          NGX-NORM-001, percent-encoded  ·  Ingress/demo/regex-match-other
+GET     http://regex-match.example.com/./AAA                             NGX-NORM-001, current-dir  ·  Ingress/demo/regex-match
+GET     http://regex-match.example.com/./Header                          NGX-NORM-001, current-dir  ·  Ingress/demo/regex-match-other
+GET     http://regex-match.example.com//AAA                              NGX-NORM-001, double-slash  ·  Ingress/demo/regex-match
+GET     http://regex-match.example.com//Header                           NGX-NORM-001, double-slash  ·  Ingress/demo/regex-match-other
+GET     http://regex-match.example.com/AAA                               from the configuration  ·  Ingress/demo/regex-match
+GET     http://regex-match.example.com/AAA/rp-extra                      NGX-REGEX-001, longer-path  ·  Ingress/demo/regex-match
+GET     http://regex-match.example.com/Header                            from the configuration  ·  Ingress/demo/regex-match-other
+GET     http://regex-match.example.com/Header/rp-extra                   NGX-REGEX-002, longer-path  ·  Ingress/demo/regex-match-other
+GET     http://regex-match.example.com/aaa                               NGX-REGEX-001, case-flip  ·  Ingress/demo/regex-match
+GET     http://regex-match.example.com/hEADER                            NGX-REGEX-002, case-flip  ·  Ingress/demo/regex-match-other
+GET     http://regex-match.example.com/rp-x/../AAA                       NGX-NORM-001, dot-segment  ·  Ingress/demo/regex-match
+GET     http://regex-match.example.com/rp-x/../Header                    NGX-NORM-001, dot-segment  ·  Ingress/demo/regex-match-other
+GET     http://rewrite-target.example.com/%49P                           NGX-NORM-001, percent-encoded  ·  Ingress/demo/rewrite-target
+GET     http://rewrite-target.example.com/./IP                           NGX-NORM-001, current-dir  ·  Ingress/demo/rewrite-target
+GET     http://rewrite-target.example.com//IP                            NGX-NORM-001, double-slash  ·  Ingress/demo/rewrite-target
+GET     http://rewrite-target.example.com/IP                             from the configuration  ·  Ingress/demo/rewrite-target
+GET     http://rewrite-target.example.com/IP/rp-extra                    NGX-REGEX-003, longer-path  ·  Ingress/demo/rewrite-target
+GET     http://rewrite-target.example.com/ip                             NGX-REGEX-003, case-flip  ·  Ingress/demo/rewrite-target
+GET     http://rewrite-target.example.com/rp-x/../IP                     NGX-NORM-001, dot-segment  ·  Ingress/demo/rewrite-target
+GET     http://trailing-slash.example.com/%6Dy-path/                     NGX-NORM-001, percent-encoded  ·  Ingress/demo/trailing-slash
+GET     http://trailing-slash.example.com/./my-path/                     NGX-NORM-001, current-dir  ·  Ingress/demo/trailing-slash
+GET     http://trailing-slash.example.com//my-path/                      NGX-NORM-001, double-slash  ·  Ingress/demo/trailing-slash
+GET     http://trailing-slash.example.com/MY-PATH/                       variation: case-flip  ·  Ingress/demo/trailing-slash
+GET     http://trailing-slash.example.com/my-path                        NGX-SLASH-001, strip-slash  ·  Ingress/demo/trailing-slash
+GET     http://trailing-slash.example.com/my-path/                       from the configuration  ·  Ingress/demo/trailing-slash
+GET     http://trailing-slash.example.com/rp-x/../my-path/               NGX-NORM-001, dot-segment  ·  Ingress/demo/trailing-slash
+GET     http://unrouted.routeparity.invalid/rp-unrouted-control          control
+
+40 probes
