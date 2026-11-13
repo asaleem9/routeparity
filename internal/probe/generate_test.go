@@ -200,3 +200,44 @@ func TestDerivedWinsOverAnEqualMutation(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateRepeatsProbesBehindAWeightedCanary(t *testing.T) {
+	w := world(t,
+		ingress("main", "c.example.com", nil, false, "/split|Exact", "/whole|Exact"),
+		ingress("by-weight", "c.example.com", []string{`canary: "true"`, `canary-weight: "20"`}, false, "/split|Exact"),
+		ingress("by-header", "c.example.com", []string{`canary: "true"`, `canary-by-header: "X-Canary"`}, false, "/whole|Exact"),
+	)
+	for _, p := range Generate(w, Options{Mutations: true}).Probes {
+		want := 1
+		// Every request aimed at /split, including its variations, is
+		// subject to the random split. A header-only canary is deterministic.
+		// "plit" also matches the percent-encoded variation, /%73plit.
+		if p.Host == "c.example.com" && strings.Contains(strings.ToLower(p.RawTarget), "plit") {
+			want = 10
+		}
+		if p.Repeat != want {
+			t.Errorf("%s: Repeat = %d, want %d", p.RawTarget, p.Repeat, want)
+		}
+	}
+}
+
+func TestGenerateSamples(t *testing.T) {
+	w := world(t,
+		ingress("main", "c.example.com", nil, false, "/split|Exact", "/whole|Exact"),
+		ingress("by-weight", "c.example.com", []string{`canary: "true"`, `canary-weight: "20"`}, false, "/split|Exact"),
+	)
+	for _, p := range Generate(w, Options{Samples: 3}).Probes {
+		want := 3
+		if p.RawTarget == "/split" {
+			want = 10 // Samples is a floor, not a cap
+		}
+		if p.Repeat != want {
+			t.Errorf("%s: Repeat = %d, want %d", p.RawTarget, p.Repeat, want)
+		}
+	}
+	for _, p := range Generate(w, Options{Samples: -1}).Probes {
+		if p.Repeat < 1 {
+			t.Errorf("%s: Repeat = %d with a negative Samples", p.RawTarget, p.Repeat)
+		}
+	}
+}
