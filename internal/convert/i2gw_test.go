@@ -2,6 +2,9 @@ package convert
 
 import (
 	"context"
+	"os"
+	"regexp"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -103,7 +106,50 @@ func TestInProcessReportsConverterVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Convert: %v", err)
 	}
-	if !strings.HasPrefix(out.Converter, i2gwModule+"@") {
-		t.Errorf("Converter = %q, want prefix %q", out.Converter, i2gwModule+"@")
+	// Whether or not this test binary carries dependency information (it
+	// depends on the Go release), the answer is the version in go.mod.
+	if want := i2gwModule + "@" + i2gwPinnedVersion; out.Converter != want {
+		t.Errorf("Converter = %q, want %q", out.Converter, want)
+	}
+}
+
+// TestPinnedVersionMatchesGoMod fails when the dependency is upgraded without
+// updating the fallback constant, which would make reports name the wrong
+// converter version.
+func TestPinnedVersionMatchesGoMod(t *testing.T) {
+	gomod, err := os.ReadFile("../../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(i2gwModule) + ` (\S+)`).FindSubmatch(gomod)
+	if m == nil {
+		t.Fatalf("go.mod does not require %s", i2gwModule)
+	}
+	if got := string(m[1]); got != i2gwPinnedVersion {
+		t.Errorf("go.mod requires %s %s but i2gwPinnedVersion is %s; update the constant", i2gwModule, got, i2gwPinnedVersion)
+	}
+}
+
+func TestVersionFromDeps(t *testing.T) {
+	other := &debug.Module{Path: "example.com/other", Version: "v9.9.9"}
+	tests := []struct {
+		name string
+		deps []*debug.Module
+		want string
+	}{
+		{"no dependency information", nil, ""},
+		{"not listed", []*debug.Module{other}, ""},
+		{"listed", []*debug.Module{other, {Path: i2gwModule, Version: "v1.2.0"}}, "v1.2.0"},
+		{"replaced by another version", []*debug.Module{{Path: i2gwModule, Version: "v1.2.0",
+			Replace: &debug.Module{Path: "example.com/fork", Version: "v1.2.1-fork"}}}, "v1.2.1-fork"},
+		{"replaced by a local directory", []*debug.Module{{Path: i2gwModule, Version: "v1.2.0",
+			Replace: &debug.Module{Path: "../ingress2gateway"}}}, "v1.2.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := versionFromDeps(tt.deps); got != tt.want {
+				t.Errorf("versionFromDeps = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

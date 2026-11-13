@@ -28,7 +28,14 @@ import (
 	_ "github.com/kubernetes-sigs/ingress2gateway/pkg/i2gw/emitters/standard"
 )
 
-const i2gwModule = "github.com/kubernetes-sigs/ingress2gateway"
+const (
+	i2gwModule = "github.com/kubernetes-sigs/ingress2gateway"
+	// i2gwPinnedVersion is the version required in go.mod. It is the
+	// fallback for binaries that carry no dependency information, which
+	// includes test binaries built by older Go releases. A test keeps it in
+	// step with go.mod.
+	i2gwPinnedVersion = "v1.2.0"
+)
 
 // InProcess converts with the ingress2gateway library linked into this
 // binary. The version is fixed at build time and reported in Output.Converter.
@@ -188,17 +195,25 @@ func kindOf(obj client.Object) string {
 // i2gwVersion reports the ingress2gateway version this binary was built
 // against, read from the module information the Go linker embeds.
 func i2gwVersion() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
-	}
-	for _, dep := range info.Deps {
-		if dep.Path == i2gwModule {
-			if dep.Replace != nil {
-				return dep.Replace.Version
-			}
-			return dep.Version
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := versionFromDeps(info.Deps); v != "" {
+			return v
 		}
 	}
-	return "unknown"
+	return i2gwPinnedVersion
+}
+
+// versionFromDeps finds the ingress2gateway version among a binary's
+// dependencies, or returns "" when it is not listed.
+func versionFromDeps(deps []*debug.Module) string {
+	for _, dep := range deps {
+		if dep.Path != i2gwModule {
+			continue
+		}
+		if dep.Replace != nil && dep.Replace.Version != "" {
+			return dep.Replace.Version
+		}
+		return dep.Version
+	}
+	return ""
 }
