@@ -1,0 +1,19 @@
+[
+  {
+    "ruleID": "NGX-REGEX-003",
+    "severity": "high",
+    "confidence": "predicted",
+    "object": {
+      "kind": "Ingress",
+      "namespace": "demo",
+      "name": "rewrite"
+    },
+    "host": "rewrite.example.com",
+    "path": "/IP",
+    "message": "Exact path \"/IP\" is matched as a case-insensitive regex prefix because its Ingress sets rewrite-target (\"/uuid\"). A URLRewrite filter on a literal Exact or PathPrefix match will rewrite fewer requests.",
+    "fix": {
+      "summary": "Match the path as a case-insensitive regular expression that also accepts longer paths. RegularExpression support and syntax are implementation-specific, so confirm your Gateway accepts the (?i) flag.",
+      "snippet": "matches:\n- path:\n    type: RegularExpression\n    value: \"(?i)/IP.*\"\n"
+    }
+  }
+]

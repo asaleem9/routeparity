@@ -1,0 +1,42 @@
+[
+  {
+    "ruleID": "NGX-REGEX-002",
+    "severity": "high",
+    "confidence": "predicted",
+    "object": {
+      "kind": "Ingress",
+      "namespace": "demo",
+      "name": "bystander"
+    },
+    "host": "leak.example.com",
+    "path": "/Header",
+    "message": "Exact path \"/Header\" is matched as a case-insensitive regex prefix, because another Ingress on this host enables regex mode. Translated literally it will stop matching requests that differ in case or have a longer path.",
+    "evidence": [
+      "Ingress/demo/regex sets use-regex"
+    ],
+    "fix": {
+      "summary": "Match the path as a case-insensitive regular expression that also accepts longer paths. RegularExpression support and syntax are implementation-specific, so confirm your Gateway accepts the (?i) flag.",
+      "snippet": "matches:\n- path:\n    type: RegularExpression\n    value: \"(?i)/Header.*\"\n"
+    }
+  },
+  {
+    "ruleID": "NGX-REGEX-002",
+    "severity": "high",
+    "confidence": "predicted",
+    "object": {
+      "kind": "Ingress",
+      "namespace": "demo",
+      "name": "bystander"
+    },
+    "host": "leak.example.com",
+    "path": "/static",
+    "message": "Prefix path \"/static\" is matched as a case-insensitive regex prefix, because another Ingress on this host enables regex mode. Translated literally it will stop matching requests that differ in case or have a longer path.",
+    "evidence": [
+      "Ingress/demo/regex sets use-regex"
+    ],
+    "fix": {
+      "summary": "Match the path as a case-insensitive regular expression that also accepts longer paths. RegularExpression support and syntax are implementation-specific, so confirm your Gateway accepts the (?i) flag.",
+      "snippet": "matches:\n- path:\n    type: RegularExpression\n    value: \"(?i)/static.*\"\n"
+    }
+  }
+]

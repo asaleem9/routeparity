@@ -1,0 +1,163 @@
+# Ingresses that exercise the ingress-nginx behaviours described in
+# "Before You Migrate: Five Surprising Ingress-NGINX Behaviors You Need to Know"
+# (https://kubernetes.io/blog/2026/02/27/ingress-nginx-before-you-migrate/),
+# plus two features with no direct Gateway API equivalent.
+#
+#   routeparity audit -f examples/five-behaviours/
+---
+# 1. use-regex: the pattern matches case-insensitively and as a prefix.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: regex-match
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: regex-match.example.com
+    http:
+      paths:
+      - path: "/[A-Z]{3}"
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: httpbin
+            port:
+              number: 8000
+---
+# 2. Regex mode leaks: this Ingress never asks for regex matching, but it
+# shares a host with the one above, so /Header also serves /headers.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: regex-match-other
+  namespace: demo
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: regex-match.example.com
+    http:
+      paths:
+      - path: "/Header"
+        pathType: Exact
+        backend:
+          service:
+            name: httpbin
+            port:
+              number: 8000
+---
+# 3. rewrite-target implies regex matching.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rewrite-target
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: "/uuid"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: rewrite-target.example.com
+    http:
+      paths:
+      - path: "/IP"
+        pathType: Exact
+        backend:
+          service:
+            name: httpbin
+            port:
+              number: 8000
+---
+# 4. A path ending in a slash redirects the slashless request with a 301.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: trailing-slash
+  namespace: demo
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: trailing-slash.example.com
+    http:
+      paths:
+      - path: "/my-path/"
+        pathType: Exact
+        backend:
+          service:
+            name: httpbin
+            port:
+              number: 8000
+---
+# 5. URL normalisation applies to every host; this Ingress gives it a target.
+# It also has TLS, so plain HTTP requests are redirected to HTTPS.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: path-normalization
+  namespace: demo
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - path-normalization.example.com
+    secretName: path-normalization-tls
+  rules:
+  - host: path-normalization.example.com
+    http:
+      paths:
+      - path: "/uuid"
+        pathType: Exact
+        backend:
+          service:
+            name: httpbin
+            port:
+              number: 8000
+---
+# External authentication and rate limiting have no core Gateway API
+# equivalent, so a converted setup serves these paths to everyone, unthrottled.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: admin
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/auth-url: "https://auth.example.com/verify"
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: admin.example.com
+    http:
+      paths:
+      - path: "/"
+        pathType: Prefix
+        backend:
+          service:
+            name: admin
+            port:
+              number: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin
+  namespace: demo
+spec:
+  selector:
+    app: httpbin
+  ports:
+  - port: 8000
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin
+  namespace: demo
+spec:
+  selector:
+    app: admin
+  ports:
+  - port: 8080

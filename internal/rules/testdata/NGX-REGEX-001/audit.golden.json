@@ -1,0 +1,36 @@
+[
+  {
+    "ruleID": "NGX-REGEX-001",
+    "severity": "high",
+    "confidence": "predicted",
+    "object": {
+      "kind": "Ingress",
+      "namespace": "demo",
+      "name": "regex"
+    },
+    "host": "regex.example.com",
+    "path": "/[A-Z]{3}",
+    "message": "ingress-nginx matches \"/[A-Z]{3}\" as a case-insensitive regular expression anchored only at the start. A RegularExpression match with the same value matches fewer requests on gateways that match the whole path case-sensitively.",
+    "fix": {
+      "summary": "Match the path as a case-insensitive regular expression that also accepts longer paths. RegularExpression support and syntax are implementation-specific, so confirm your Gateway accepts the (?i) flag.",
+      "snippet": "matches:\n- path:\n    type: RegularExpression\n    value: \"(?i)/[A-Z]{3}.*\"\n"
+    }
+  },
+  {
+    "ruleID": "NGX-REGEX-001",
+    "severity": "high",
+    "confidence": "predicted",
+    "object": {
+      "kind": "Ingress",
+      "namespace": "demo",
+      "name": "regex"
+    },
+    "host": "regex.example.com",
+    "path": "/api/v[0-9]+",
+    "message": "ingress-nginx matches \"/api/v[0-9]+\" as a case-insensitive regular expression anchored only at the start. A RegularExpression match with the same value matches fewer requests on gateways that match the whole path case-sensitively.",
+    "fix": {
+      "summary": "Match the path as a case-insensitive regular expression that also accepts longer paths. RegularExpression support and syntax are implementation-specific, so confirm your Gateway accepts the (?i) flag.",
+      "snippet": "matches:\n- path:\n    type: RegularExpression\n    value: \"(?i)/api/v[0-9]+.*\"\n"
+    }
+  }
+]

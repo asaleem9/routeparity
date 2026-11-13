@@ -1,0 +1,70 @@
+# Reported: /Header and /static, which share a host with an Ingress that sets use-regex.
+# Not reported: the regex Ingress's own path (NGX-REGEX-001), and /Header on a host with no regex.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: regex
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: leak.example.com
+    http:
+      paths:
+      - path: "/items/[0-9]+"
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: items
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bystander
+  namespace: demo
+
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: leak.example.com
+    http:
+      paths:
+      - path: "/Header"
+        pathType: Exact
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+      - path: "/static"
+        pathType: Prefix
+        backend:
+          service:
+            name: assets
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: unaffected
+  namespace: demo
+
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: other.example.com
+    http:
+      paths:
+      - path: "/Header"
+        pathType: Exact
+        backend:
+          service:
+            name: web
+            port:
+              number: 80

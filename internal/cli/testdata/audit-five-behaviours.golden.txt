@@ -1,0 +1,115 @@
+routeparity audit  ingress class "nginx"
+  6 Ingresses · 5 hosts · 6 paths
+  converter warnings from github.com/kubernetes-sigs/ingress2gateway@v1.2.0 (standard emitter)
+  note: 6 of 6 Ingresses have no creationTimestamp. ingress-nginx resolves conflicting rules in
+  favour of the oldest Ingress, so precedence between them is assumed, not known. Export manifests
+  from the cluster to keep timestamps.
+
+HIGH    NGX-CONVERT-001  The converter did not translate a feature
+        Ingress/demo/admin
+        ingress2gateway: Unsupported annotation nginx.ingress.kubernetes.io/auth-url
+        because: this controls who can reach the backend; without it requests that were rejected are
+        served
+
+HIGH    NGX-REGEX-002  Regex mode applies to every path on the host
+        regex-match.example.com /Header  ·  Ingress/demo/regex-match-other
+        Exact path "/Header" is matched as a case-insensitive regex prefix, because another Ingress
+        on this host enables regex mode. Translated literally it will stop matching requests that
+        differ in case or have a longer path.
+        because: Ingress/demo/regex-match sets use-regex
+        fix: Match the path as a case-insensitive regular expression that also accepts longer paths.
+        RegularExpression support and syntax are implementation-specific, so confirm your Gateway
+        accepts the (?i) flag.
+            matches:
+            - path:
+                type: RegularExpression
+                value: "(?i)/Header.*"
+
+HIGH    NGX-REGEX-001  Regex paths match case-insensitively and as a prefix
+        regex-match.example.com /[A-Z]{3}  ·  Ingress/demo/regex-match
+        ingress-nginx matches "/[A-Z]{3}" as a case-insensitive regular expression anchored only at
+        the start. A RegularExpression match with the same value matches fewer requests on gateways
+        that match the whole path case-sensitively.
+        fix: Match the path as a case-insensitive regular expression that also accepts longer paths.
+        RegularExpression support and syntax are implementation-specific, so confirm your Gateway
+        accepts the (?i) flag.
+            matches:
+            - path:
+                type: RegularExpression
+                value: "(?i)/[A-Z]{3}.*"
+
+HIGH    NGX-REGEX-003  rewrite-target turns on regex matching
+        rewrite-target.example.com /IP  ·  Ingress/demo/rewrite-target
+        Exact path "/IP" is matched as a case-insensitive regex prefix because its Ingress sets
+        rewrite-target ("/uuid"). A URLRewrite filter on a literal Exact or PathPrefix match will
+        rewrite fewer requests.
+        fix: Match the path as a case-insensitive regular expression that also accepts longer paths.
+        RegularExpression support and syntax are implementation-specific, so confirm your Gateway
+        accepts the (?i) flag.
+            matches:
+            - path:
+                type: RegularExpression
+                value: "(?i)/IP.*"
+
+MEDIUM  NGX-CONVERT-001  The converter did not translate a feature
+        ingress2gateway: Ingress NGINX serves TLS traffic for host "admin.example.com" with a
+        self-signed certificate. This behavior will not be translated and the host will not be
+        accessible via HTTPS.
+
+MEDIUM  NGX-CONVERT-001  The converter did not translate a feature
+        ingress2gateway: Ingress NGINX serves TLS traffic for host "regex-match.example.com" with a
+        self-signed certificate. This behavior will not be translated and the host will not be
+        accessible via HTTPS.
+
+MEDIUM  NGX-CONVERT-001  The converter did not translate a feature
+        ingress2gateway: Ingress NGINX serves TLS traffic for host "rewrite-target.example.com" with
+        a self-signed certificate. This behavior will not be translated and the host will not be
+        accessible via HTTPS.
+
+MEDIUM  NGX-CONVERT-001  The converter did not translate a feature
+        ingress2gateway: Ingress NGINX serves TLS traffic for host "trailing-slash.example.com" with
+        a self-signed certificate. This behavior will not be translated and the host will not be
+        accessible via HTTPS.
+
+MEDIUM  NGX-CONVERT-001  The converter did not translate a feature
+        Ingress/demo/admin
+        ingress2gateway: Unsupported annotation nginx.ingress.kubernetes.io/limit-rps
+        because: rate and connection limits stop being enforced
+
+MEDIUM  NGX-TLS-001  Hosts with TLS redirect HTTP to HTTPS
+        path-normalization.example.com
+        ingress-nginx answers plain HTTP requests for 1 path(s) on this host with a 308 redirect to
+        HTTPS. The Gateway needs an HTTP listener with a redirecting HTTPRoute to do the same.
+        fix: Attach a redirect-only HTTPRoute to the HTTP listener for this host.
+            rules:
+            - filters:
+              - type: RequestRedirect
+                requestRedirect:
+                  scheme: https
+                  statusCode: 308
+
+MEDIUM  NGX-SLASH-001  A path ending in a slash redirects the slashless request
+        trailing-slash.example.com /my-path/  ·  Ingress/demo/trailing-slash
+        ingress-nginx answers "/my-path" with a 301 redirect to "/my-path/". Without an explicit
+        redirect the Gateway returns 404 for "/my-path".
+        fix: Add a rule that redirects the slashless path.
+            - matches:
+              - path:
+                  type: Exact
+                  value: "/my-path"
+              filters:
+              - type: RequestRedirect
+                requestRedirect:
+                  statusCode: 301
+                  path:
+                    type: ReplaceFullPath
+                    replaceFullPath: "/my-path/"
+
+LOW     NGX-NORM-001  Request paths are normalised before matching
+        ingress-nginx normalises dot segments and repeated slashes before matching. How your Gateway
+        implementation normalises paths cannot be determined from manifests; it has to be measured
+        with requests.
+
+Summary: 4 high · 7 medium · 1 low · 0 info
+These are predictions from the manifests. No requests were sent, so none of them is confirmed, and
+behaviour that depends on controller settings or on the Gateway implementation is not covered.

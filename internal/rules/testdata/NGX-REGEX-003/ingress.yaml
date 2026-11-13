@@ -1,0 +1,45 @@
+# Reported: /IP, whose Ingress sets rewrite-target without use-regex.
+# Not reported: the Ingress that sets both, which belongs to NGX-REGEX-001.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rewrite
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: "/uuid"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: rewrite.example.com
+    http:
+      paths:
+      - path: "/IP"
+        pathType: Exact
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rewrite-and-regex
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: "/$1"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: both.example.com
+    http:
+      paths:
+      - path: "/svc/(.*)"
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: web
+            port:
+              number: 80

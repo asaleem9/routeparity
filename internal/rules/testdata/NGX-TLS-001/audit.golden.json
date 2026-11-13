@@ -1,0 +1,16 @@
+[
+  {
+    "ruleID": "NGX-TLS-001",
+    "severity": "medium",
+    "confidence": "predicted",
+    "host": "secure.example.com",
+    "message": "ingress-nginx answers plain HTTP requests for 1 path(s) on this host with a 308 redirect to HTTPS. The Gateway needs an HTTP listener with a redirecting HTTPRoute to do the same.",
+    "evidence": [
+      "ssl-redirect is disabled for: Ingress/demo/secure-optout /health"
+    ],
+    "fix": {
+      "summary": "Attach a redirect-only HTTPRoute to the HTTP listener for this host.",
+      "snippet": "rules:\n- filters:\n  - type: RequestRedirect\n    requestRedirect:\n      scheme: https\n      statusCode: 308\n"
+    }
+  }
+]

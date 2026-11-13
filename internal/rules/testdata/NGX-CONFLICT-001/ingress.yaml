@@ -1,0 +1,56 @@
+# Reported: /api, claimed by two Ingresses with different backends.
+# Not reported: /same, where both Ingresses name the same backend.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: first
+  namespace: demo
+
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: conflict.example.com
+    http:
+      paths:
+      - path: "/api"
+        pathType: Prefix
+        backend:
+          service:
+            name: api-v1
+            port:
+              number: 80
+      - path: "/same"
+        pathType: Prefix
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: second
+  namespace: demo
+
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: conflict.example.com
+    http:
+      paths:
+      - path: "/api"
+        pathType: Prefix
+        backend:
+          service:
+            name: api-v2
+            port:
+              number: 80
+      - path: "/same"
+        pathType: Prefix
+        backend:
+          service:
+            name: web
+            port:
+              number: 80

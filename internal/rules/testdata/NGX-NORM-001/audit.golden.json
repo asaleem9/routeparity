@@ -1,0 +1,8 @@
+[
+  {
+    "ruleID": "NGX-NORM-001",
+    "severity": "low",
+    "confidence": "predicted",
+    "message": "ingress-nginx normalises dot segments and repeated slashes before matching. How your Gateway implementation normalises paths cannot be determined from manifests; it has to be measured with requests."
+  }
+]

@@ -1,0 +1,32 @@
+[
+  {
+    "ruleID": "NGX-SLASH-001",
+    "severity": "low",
+    "confidence": "predicted",
+    "object": {
+      "kind": "Ingress",
+      "namespace": "demo",
+      "name": "covered"
+    },
+    "host": "covered.example.com",
+    "path": "/docs/",
+    "message": "\"/docs\" is also matched by the Prefix path \"/\" on this host. ingress-nginx may answer \"/docs\" with a 301 redirect to \"/docs/\" or route it to the broader path; a Gateway will route it to the broader path. Confirm which you rely on."
+  },
+  {
+    "ruleID": "NGX-SLASH-001",
+    "severity": "medium",
+    "confidence": "predicted",
+    "object": {
+      "kind": "Ingress",
+      "namespace": "demo",
+      "name": "slash"
+    },
+    "host": "slash.example.com",
+    "path": "/my-path/",
+    "message": "ingress-nginx answers \"/my-path\" with a 301 redirect to \"/my-path/\". Without an explicit redirect the Gateway returns 404 for \"/my-path\".",
+    "fix": {
+      "summary": "Add a rule that redirects the slashless path.",
+      "snippet": "- matches:\n  - path:\n      type: Exact\n      value: \"/my-path\"\n  filters:\n  - type: RequestRedirect\n    requestRedirect:\n      statusCode: 301\n      path:\n        type: ReplaceFullPath\n        replaceFullPath: \"/my-path/\"\n"
+    }
+  }
+]

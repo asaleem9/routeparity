@@ -1,0 +1,18 @@
+[
+  {
+    "ruleID": "NGX-CONFLICT-001",
+    "severity": "medium",
+    "confidence": "predicted",
+    "object": {
+      "kind": "Ingress",
+      "namespace": "demo",
+      "name": "second"
+    },
+    "host": "conflict.example.com",
+    "path": "/api",
+    "message": "Prefix path \"/api\" is defined by Ingress/demo/first (backend demo/api-v1:80) and by Ingress/demo/second (backend demo/api-v2:80). ingress-nginx serves the older Ingress.",
+    "evidence": [
+      "the manifests carry no creationTimestamp, so which Ingress is older cannot be determined from them"
+    ]
+  }
+]

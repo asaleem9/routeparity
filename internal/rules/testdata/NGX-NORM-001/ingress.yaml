@@ -1,0 +1,41 @@
+# Reported once, however many hosts there are.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: one
+  namespace: demo
+
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: one.example.com
+    http:
+      paths:
+      - path: "/uuid"
+        pathType: Exact
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: two
+  namespace: demo
+
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: two.example.com
+    http:
+      paths:
+      - path: "/uuid"
+        pathType: Exact
+        backend:
+          service:
+            name: web
+            port:
+              number: 80

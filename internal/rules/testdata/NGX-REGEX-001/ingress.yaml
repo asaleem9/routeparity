@@ -1,0 +1,53 @@
+# Reported: both paths of the Ingress that sets use-regex.
+# Not reported: the canary Ingress, which adds a backend rather than a path.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: regex
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: regex.example.com
+    http:
+      paths:
+      - path: "/[A-Z]{3}"
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+      - path: "/api/v[0-9]+"
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: api
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: regex-canary
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "10"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: regex.example.com
+    http:
+      paths:
+      - path: "/[A-Z]{3}"
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: web-canary
+            port:
+              number: 80

@@ -1,0 +1,92 @@
+# Reported: secure.example.com, with the opted-out /health path listed as evidence.
+# Not reported: a TLS host where every path sets ssl-redirect false, and a host without TLS.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: secure
+  namespace: demo
+
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - secure.example.com
+    secretName: cert
+  rules:
+  - host: secure.example.com
+    http:
+      paths:
+      - path: "/"
+        pathType: Prefix
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: secure-optout
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: secure.example.com
+    http:
+      paths:
+      - path: "/health"
+        pathType: Exact
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: all-optout
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - optout.example.com
+    secretName: cert
+  rules:
+  - host: optout.example.com
+    http:
+      paths:
+      - path: "/"
+        pathType: Prefix
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: plain
+  namespace: demo
+
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: plain.example.com
+    http:
+      paths:
+      - path: "/"
+        pathType: Prefix
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
