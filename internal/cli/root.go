@@ -2,10 +2,14 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"runtime/debug"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -76,15 +80,21 @@ func NewRootCommand(streams Streams) *cobra.Command {
 	root.AddCommand(newDiffCommand(streams))
 	root.AddCommand(newLiveCommand(streams))
 	root.AddCommand(newVerifyCommand(streams))
+	root.AddCommand(newLabCommand(streams))
 	root.AddCommand(newExplainCommand(streams))
 	return root
 }
 
 // Run executes the command line and returns the process exit code.
 func Run(args []string, streams Streams) int {
+	// Ctrl-C cancels the command's context, so that a run in progress stops
+	// sending and a lab run still deletes its cluster.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	root := NewRootCommand(streams)
 	root.SetArgs(args)
-	err := root.Execute()
+	err := root.ExecuteContext(ctx)
 	if err == nil {
 		return ExitOK
 	}
