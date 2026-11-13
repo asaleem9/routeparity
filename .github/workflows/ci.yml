@@ -15,11 +15,19 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest Go the module supports and the current release. They
+        # differ in ways that matter, such as what a test binary records
+        # about its dependencies.
+        go: ["1.25.5", "stable"]
+    name: test (go ${{ matrix.go }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go }}
       - name: Check go.mod is tidy
         run: |
           go mod tidy
