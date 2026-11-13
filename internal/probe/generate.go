@@ -169,6 +169,7 @@ func generic(w *model.World) []model.Probe {
 			ref := p.Ingress
 			for _, v := range variants {
 				probe := model.Probe{
+					Scheme:    rules.MutationScheme(h),
 					Host:      rules.ProbeHost(h),
 					RawTarget: v.target,
 					Origin:    model.Origin{Source: model.OriginMutation, Object: &ref, Mutation: v.name},

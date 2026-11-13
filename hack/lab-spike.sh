@@ -59,7 +59,7 @@ wait_for() {
 }
 
 step "build the echo image"
-GOOS=linux GOARCH=$(go env GOARCH) CGO_ENABLED=0 go build -C "$ROOT" -trimpath -o "$WORK/routeparity-echo" ./cmd/routeparity-echo
+GOOS=linux GOARCH=$(go env GOARCH) CGO_ENABLED=0 go build -C "$ROOT" -trimpath -o "$WORK/routeparity-echo-$(go env GOARCH)" ./cmd/routeparity-echo
 docker build -q -t "$ECHO_IMAGE" -f "$ROOT/hack/echo.Dockerfile" "$WORK" >/dev/null
 
 step "create kind cluster $CLUSTER"

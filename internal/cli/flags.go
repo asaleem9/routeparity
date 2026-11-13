@@ -106,10 +106,16 @@ type sendFlags struct {
 	rate        float64
 }
 
+// add registers the flags with defaults suited to an endpoint someone else
+// depends on: a few requests at a time, at a limited rate.
 func (f *sendFlags) add(cmd *cobra.Command) {
+	f.addWithDefaults(cmd, prober.DefaultConcurrency, prober.DefaultRate)
+}
+
+func (f *sendFlags) addWithDefaults(cmd *cobra.Command, concurrency int, rate float64) {
 	cmd.Flags().DurationVar(&f.timeout, "timeout", prober.DefaultTimeout, "time allowed for one probe")
-	cmd.Flags().IntVar(&f.concurrency, "concurrency", prober.DefaultConcurrency, "probes in flight at once")
-	cmd.Flags().Float64Var(&f.rate, "rate", prober.DefaultRate, "probes started per second; 0 removes the limit")
+	cmd.Flags().IntVar(&f.concurrency, "concurrency", concurrency, "probes in flight at once")
+	cmd.Flags().Float64Var(&f.rate, "rate", rate, "probes started per second; 0 removes the limit")
 }
 
 func (f *sendFlags) options() (prober.Options, error) {

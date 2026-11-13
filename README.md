@@ -12,7 +12,9 @@ This is early. Two things work today:
 - `routeparity live` sends the same requests to two endpoints and compares what each did. `record` and `diff` do the same in two steps, with a snapshot file in between.
 - `routeparity verify` checks an endpoint against a saved snapshot, with JUnit and Markdown reports for CI.
 
-What's missing is the part that sets up the comparison for you: a command that starts a local cluster with both proxies and stand-in backends. Today that is a script. The [roadmap](#roadmap) has the order.
+- `routeparity lab record` runs your Ingresses on real ingress-nginx in a local cluster and records what it does, without touching any cluster of yours.
+
+What's missing is the Gateway half of the lab: starting your Gateway implementation next to ingress-nginx and comparing the two in one command. Today that half is a script. The [roadmap](#roadmap) has the order.
 
 ## Install
 
@@ -191,7 +193,7 @@ Three results are never reported as a match. If neither endpoint routes a path t
 | `NGX-CONVERT-001` | varies | ingress2gateway reported an annotation or feature it could not translate. |
 | `NGX-NORM-001` | low | Request paths are normalised (`.`, `..`, `//`) before matching. |
 
-The regex, trailing-slash and normalisation rules come from the Kubernetes blog post [Before You Migrate: Five Surprising Ingress-NGINX Behaviors You Need to Know](https://kubernetes.io/blog/2026/02/27/ingress-nginx-before-you-migrate/).
+The regex, trailing-slash and normalisation rules come from the Kubernetes blog post [Before You Migrate: Five Surprising Ingress-NGINX Behaviors You Need to Know](https://kubernetes.io/blog/2026/02/27/ingress-nginx-before-you-migrate/). I don't take the post's word for it: `e2e/lab_test.go` reproduces each of the five on real ingress-nginx, and CI runs it on every change.
 
 `NGX-CONVERT-001` runs [ingress2gateway](https://github.com/kubernetes-sigs/ingress2gateway) in process and reports its warnings, so the list of untranslated features always matches the converter version in the binary. Anything that controls access, such as `auth-url` or a source-range allow list, is raised to high, because losing it means serving requests that used to be rejected.
 
@@ -205,15 +207,38 @@ Every finding is a prediction. The audit reads manifests, and three things that 
 
 An audit with no findings does not mean the two setups match. Measuring that is what `live` is for.
 
-## Try it on a laptop
+## Record ingress-nginx on your laptop
 
-`hack/lab-spike.sh` starts a kind cluster with ingress-nginx and Envoy Gateway side by side and puts `routeparity-echo` behind both. It needs Docker, kind and kubectl, and takes about a minute once the images are cached.
+ingress-nginx is retired, and at some point the one in your cluster goes away. `lab record` captures how it treats your Ingresses before that happens, on a kind cluster on your machine:
 
-```sh
-KEEP=1 hack/lab-spike.sh     # prints a small comparison of its own, then leaves the cluster up
+```console
+$ routeparity lab record -f examples/five-behaviours/ -o ingress-nginx.json
+[  0s] starting kind cluster routeparity-lab (Kubernetes v1.35.8)
+[ 41s] loaded the local image routeparity-echo:dev into the cluster
+[ 41s] installing ingress-nginx v1.15.1
+[ 68s] applying 6 Ingress(es) with 2 Service(s) replaced by the echo backend
+[ 69s] waiting for ingress-nginx to load the configuration
+[ 71s] sending 40 probe(s)
+[ 72s] deleting cluster routeparity-lab
+recorded 40 observation(s) of ingress-nginx v1.15.1
+2 thing(s) could not be reproduced and are listed in the snapshot as not verified:
+  backend-dependent: nginx.ingress.kubernetes.io/auth-url (Ingress/demo/admin)
+  unsupported: nginx.ingress.kubernetes.io/limit-rps (Ingress/demo/admin)
 ```
 
-With the cluster up, port-forward the two proxies and point `live` at them. That is how the output above was produced. Delete the cluster with `kind delete cluster --name routeparity-spike`.
+It applies your Ingresses as they are and replaces every Service they route to with `routeparity-echo`, so the snapshot holds what each backend received as well as what the client got. Then check a Gateway against it:
+
+```sh
+routeparity verify ingress-nginx.json --address gateway.staging:80
+```
+
+Things to know before you rely on it:
+
+- It needs Docker running. It creates its own kind cluster and never reads or writes your kubeconfig. `--keep` leaves the cluster up, which cuts the next run to around ten seconds; `routeparity lab down` deletes it.
+- It runs ingress-nginx 1.15.1, the final release, with default settings. If your controller is older or has a customised ConfigMap, its behaviour can differ from what the lab records.
+- Annotations that need something the lab doesn't have are removed before applying and listed as not verified: external authentication, source-range allow lists, rate limits, snippets, and anything that makes the backend speak a protocol other than HTTP. The paths under those Ingresses are still recorded, without the removed behaviour.
+- Until there is a release with a published image, build the echo image first with `make echo-image`.
+- Against a real Gateway, `verify` compares the client's side only. Comparing what the Gateway forwards needs the echo behind it too, which is the half of the lab that isn't a command yet. `hack/lab-spike.sh` does it by hand for Envoy Gateway.
 
 ## What `live` doesn't do yet
 
@@ -225,7 +250,7 @@ With the cluster up, port-forward the two proxies and point `live` at them. That
 
 ## Roadmap
 
-1. `lab`: do what the script does as a command, from your own manifests, with every backend replaced by the echo. Nothing touches production.
+1. The Gateway half of the lab: start a Gateway implementation next to ingress-nginx from your own manifests, or from ingress2gateway's output, and compare the two in one command.
 2. Explanations and fixes attached to each observed difference.
 3. A published table of how Envoy Gateway, NGINX Gateway Fabric and Istio each differ from ingress-nginx, regenerated on a schedule.
 
@@ -233,6 +258,7 @@ With the cluster up, port-forward the two proxies and point `live` at them. That
 
 ```sh
 make test      # unit and golden tests
+make e2e       # the lab against a real kind cluster; needs Docker, takes about a minute
 make lint      # golangci-lint
 make golden    # regenerate golden files, then read the diff before committing
 ```

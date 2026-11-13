@@ -60,11 +60,23 @@ func Repeat(h *model.Host, p model.PathRule) int {
 	return 1
 }
 
+// MutationScheme is the scheme a variation of a path is sent over. On a host
+// with TLS, ingress-nginx answers plain HTTP with a redirect to HTTPS before
+// it looks at the path, so a variation sent over HTTP would only ever show
+// the redirect. Routing happens on the HTTPS side.
+func MutationScheme(h *model.Host) string {
+	if h.TLS {
+		return "https"
+	}
+	return "http"
+}
+
 // mutation builds a probe that a rule owns. It returns false when the target
 // cannot be sent as a well-formed request.
 func mutation(ruleID string, h *model.Host, p model.PathRule, name, target string) (model.Probe, bool) {
 	ref := p.Ingress
 	probe := model.Probe{
+		Scheme:    MutationScheme(h),
 		Host:      ProbeHost(h),
 		RawTarget: target,
 		Origin:    model.Origin{Source: model.OriginMutation, RuleID: ruleID, Object: &ref, Mutation: name},

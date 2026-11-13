@@ -241,3 +241,24 @@ func TestGenerateSamples(t *testing.T) {
 		}
 	}
 }
+
+func TestMutationsOnATLSHostGoOverHTTPS(t *testing.T) {
+	w := world(t,
+		ingress("secure", "secure.example.com", nil, true, "/app|Exact"),
+		ingress("plain", "plain.example.com", nil, false, "/app|Exact"),
+	)
+	for _, p := range Generate(w, Options{Mutations: true}).Probes {
+		if p.Origin.Source != model.OriginMutation {
+			continue
+		}
+		want := "http"
+		if p.Host == "secure.example.com" {
+			// Over plain HTTP a TLS host answers every path with the same
+			// redirect, which would say nothing about how the path is routed.
+			want = "https"
+		}
+		if p.Scheme != want {
+			t.Errorf("%s%s (%s): scheme = %s, want %s", p.Host, p.RawTarget, p.Origin.Mutation, p.Scheme, want)
+		}
+	}
+}

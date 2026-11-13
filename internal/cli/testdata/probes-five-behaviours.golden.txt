@@ -1,14 +1,14 @@
 GET     http://admin.example.com/                                        from the configuration  ·  Ingress/demo/admin
 GET     http://admin.example.com/rp-sub                                  from the configuration  ·  Ingress/demo/admin
-GET     http://path-normalization.example.com/%75uid                     NGX-NORM-001, percent-encoded  ·  Ingress/demo/path-normalization
-GET     http://path-normalization.example.com/./uuid                     NGX-NORM-001, current-dir  ·  Ingress/demo/path-normalization
-GET     http://path-normalization.example.com//uuid                      NGX-NORM-001, double-slash  ·  Ingress/demo/path-normalization
-GET     http://path-normalization.example.com/UUID                       variation: case-flip  ·  Ingress/demo/path-normalization
-GET     http://path-normalization.example.com/rp-x/../uuid               NGX-NORM-001, dot-segment  ·  Ingress/demo/path-normalization
+GET     https://path-normalization.example.com/%75uid                    NGX-NORM-001, percent-encoded  ·  Ingress/demo/path-normalization
+GET     https://path-normalization.example.com/./uuid                    NGX-NORM-001, current-dir  ·  Ingress/demo/path-normalization
+GET     https://path-normalization.example.com//uuid                     NGX-NORM-001, double-slash  ·  Ingress/demo/path-normalization
+GET     https://path-normalization.example.com/UUID                      variation: case-flip  ·  Ingress/demo/path-normalization
+GET     https://path-normalization.example.com/rp-x/../uuid              NGX-NORM-001, dot-segment  ·  Ingress/demo/path-normalization
 GET     http://path-normalization.example.com/uuid                       from the configuration  ·  Ingress/demo/path-normalization
 GET     https://path-normalization.example.com/uuid                      from the configuration  ·  Ingress/demo/path-normalization
-GET     http://path-normalization.example.com/uuid/                      variation: add-slash  ·  Ingress/demo/path-normalization
-GET     http://path-normalization.example.com/uuidrp                     variation: segment-boundary  ·  Ingress/demo/path-normalization
+GET     https://path-normalization.example.com/uuid/                     variation: add-slash  ·  Ingress/demo/path-normalization
+GET     https://path-normalization.example.com/uuidrp                    variation: segment-boundary  ·  Ingress/demo/path-normalization
 GET     http://regex-match.example.com/%41AA                             NGX-NORM-001, percent-encoded  ·  Ingress/demo/regex-match
 GET     http://regex-match.example.com/%48eader                          NGX-NORM-001, percent-encoded  ·  Ingress/demo/regex-match-other
 GET     http://regex-match.example.com/./AAA                             NGX-NORM-001, current-dir  ·  Ingress/demo/regex-match
