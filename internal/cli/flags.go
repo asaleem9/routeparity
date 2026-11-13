@@ -76,16 +76,27 @@ func describeSkipped(skipped []model.SkippedIngress) string {
 // probeFlags choose which probes are generated.
 type probeFlags struct {
 	mutations bool
+	samples   int
 }
 
 func (f *probeFlags) add(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&f.mutations, "mutations", false,
 		"also send variations of each path (changed case, extra segments, dot segments, doubled slashes). "+
 			"They find the most differences, and a WAF in front of a live endpoint may object to them")
+	addSamplesFlag(cmd, &f.samples)
 }
 
-func (f *probeFlags) generate(w *model.World) probe.Set {
-	return probe.Generate(w, probe.Options{Mutations: f.mutations})
+func (f *probeFlags) generate(w *model.World) (probe.Set, error) {
+	if f.samples < 1 {
+		return probe.Set{}, errors.New("--samples must be at least 1")
+	}
+	return probe.Generate(w, probe.Options{Mutations: f.mutations, Samples: f.samples}), nil
+}
+
+func addSamplesFlag(cmd *cobra.Command, samples *int) {
+	cmd.Flags().IntVar(samples, "samples", 1,
+		"send every probe this many times; an endpoint that answers inconsistently is then reported as unverified "+
+			"instead of compared on one sample")
 }
 
 // sendFlags control how probes are sent.

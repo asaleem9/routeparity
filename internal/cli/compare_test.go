@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -424,5 +426,183 @@ func TestProbesExampleGolden(t *testing.T) {
 	}
 	if diff := cmp.Diff(string(want), got.stdout); diff != "" {
 		t.Errorf("probes differ from %s (-want +got):\n%s", golden, diff)
+	}
+}
+
+// recordOld records the old proxy with mutations and returns the snapshot path.
+func recordOld(t *testing.T, oldAddr, manifests string) string {
+	t.Helper()
+	snap := filepath.Join(t.TempDir(), "old.json")
+	rec := run(t, "", "record", "-f", manifests, "--address", oldAddr, "--name", "old", "--kind", "ingress-nginx",
+		"--mutations", "--rate", "0", "-o", snap)
+	if rec.code != ExitOK {
+		t.Fatalf("record: exit %d: %s", rec.code, rec.stderr)
+	}
+	return snap
+}
+
+func TestVerify(t *testing.T) {
+	oldAddr, newAddr, manifests := startProxies(t)
+	baseline := recordOld(t, oldAddr, manifests)
+
+	t.Run("the endpoint the snapshot came from still matches", func(t *testing.T) {
+		got := run(t, "", "verify", baseline, "--address", oldAddr, "--rate", "0", "--strict")
+		if got.code != ExitOK {
+			t.Fatalf("exit code = %d, want %d\n%s%s", got.code, ExitOK, got.stdout, got.stderr)
+		}
+		if !strings.Contains(got.stdout, "No differences on the") {
+			t.Errorf("report does not state the result:\n%s", got.stdout)
+		}
+	})
+
+	t.Run("a different endpoint is caught, with no manifests involved", func(t *testing.T) {
+		dir := t.TempDir()
+		junit, markdown, saved := filepath.Join(dir, "report.xml"), filepath.Join(dir, "summary.md"), filepath.Join(dir, "new.json")
+		got := run(t, "", "verify", baseline, "--address", newAddr, "--name", "new", "--kind", "gateway-api", "--rate", "0",
+			"--junit", junit, "--markdown", markdown, "--save", saved, "-o", "json")
+		if got.code != ExitFindings {
+			t.Fatalf("exit code = %d, want %d: %s", got.code, ExitFindings, got.stderr)
+		}
+		res := decodeDiff(t, got.stdout)
+		if res.Summary.Diff == 0 || res.Baseline.Name != "old" || res.Candidate.Name != "new" {
+			t.Errorf("summary = %+v, %q → %q", res.Summary, res.Baseline.Name, res.Candidate.Name)
+		}
+		// The mutations stored in the snapshot were replayed.
+		if v := verdicts(res)["regex.example.com /aaa"]; v != model.VerdictDiff {
+			t.Errorf("/aaa: verdict = %q, want DIFF", v)
+		}
+
+		var suites struct {
+			Suites []struct {
+				Tests    int `xml:"tests,attr"`
+				Failures int `xml:"failures,attr"`
+			} `xml:"testsuite"`
+		}
+		data, err := os.ReadFile(junit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := xml.Unmarshal(data, &suites); err != nil || len(suites.Suites) != 1 {
+			t.Fatalf("--junit file is not a JUnit report: %v\n%s", err, data)
+		}
+		if suites.Suites[0].Failures != res.Summary.Diff || suites.Suites[0].Tests != res.Summary.Probes {
+			t.Errorf("JUnit has %d failures in %d tests; the comparison has %d differences in %d probes",
+				suites.Suites[0].Failures, suites.Suites[0].Tests, res.Summary.Diff, res.Summary.Probes)
+		}
+
+		md, err := os.ReadFile(markdown)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(md), "### Differences") || !strings.Contains(string(md), "NGX-REGEX-001 case-flip") {
+			t.Errorf("--markdown file lacks the differences table:\n%s", md)
+		}
+
+		// The saved candidate snapshot is usable as an input in its own right.
+		if again := run(t, "", "diff", baseline, saved, "-o", "json"); again.code != ExitFindings ||
+			decodeDiff(t, again.stdout).Summary != res.Summary {
+			t.Errorf("diff of the baseline against the --save file gives a different result")
+		}
+	})
+
+	t.Run("other output formats on stdout", func(t *testing.T) {
+		if got := run(t, "", "verify", baseline, "--address", newAddr, "--rate", "0", "-o", "junit"); !strings.HasPrefix(got.stdout, "<?xml") {
+			t.Errorf("-o junit does not print XML:\n%.200s", got.stdout)
+		}
+		if got := run(t, "", "verify", baseline, "--address", newAddr, "--rate", "0", "-o", "markdown"); !strings.HasPrefix(got.stdout, "## routeparity") {
+			t.Errorf("-o markdown does not print Markdown:\n%.200s", got.stdout)
+		}
+	})
+
+	t.Run("bad input", func(t *testing.T) {
+		tests := []struct {
+			name string
+			args []string
+			want string
+		}{
+			{"no address", []string{"verify", baseline}, "--address or --https-address is required"},
+			{"no snapshot", []string{"verify", "--address", newAddr}, "accepts 1 arg"},
+			{"not a snapshot", []string{"verify", manifests, "--address", newAddr}, "decode snapshot"},
+			{"zero samples", []string{"verify", baseline, "--address", newAddr, "--samples", "0"}, "--samples must be at least 1"},
+			{"a header both ignored and compared", []string{"verify", baseline, "--address", newAddr,
+				"--ignore-header", "Location", "--compare-header", "location"}, "both --ignore-header and --compare-header"},
+			{"unwritable report", []string{"verify", baseline, "--address", newAddr, "--rate", "0",
+				"--junit", filepath.Join(t.TempDir(), "no-such-dir", "r.xml")}, "no-such-dir"},
+		}
+		for _, tt := range tests {
+			got := run(t, "", tt.args...)
+			if got.code != ExitError || !strings.Contains(got.stderr, tt.want) {
+				t.Errorf("%s: exit %d, stderr %q; want exit %d mentioning %q", tt.name, got.code, got.stderr, ExitError, tt.want)
+			}
+		}
+	})
+}
+
+func TestIgnoreHeaderDemotesADifference(t *testing.T) {
+	oldAddr, newAddr, manifests := startProxies(t)
+	baseline := recordOld(t, oldAddr, manifests)
+
+	// /app differs in three ways: routed or not, status, and the redirect.
+	// Ignoring Location removes only the third, and the report still shows it.
+	got := run(t, "", "verify", baseline, "--address", newAddr, "--rate", "0", "--ignore-header", "Location", "-o", "json")
+	res := decodeDiff(t, got.stdout)
+	for _, c := range res.Comparisons {
+		if c.Probe.Host+" "+c.Probe.RawTarget != "slash.example.com /app" {
+			continue
+		}
+		if diff := cmp.Diff([]string{"routed", "client.status"}, deltaFields(c)); diff != "" {
+			t.Errorf("/app deltas with Location ignored (-want +got):\n%s", diff)
+		}
+		if len(c.Suppressed) == 0 {
+			t.Error("the ignored redirect is not recorded as suppressed")
+		}
+		return
+	}
+	t.Fatal("no comparison for slash.example.com /app")
+}
+
+func TestSamplesDetectsAnEndpointThatAnswersInconsistently(t *testing.T) {
+	oldAddr, _, manifests := startProxies(t)
+	baseline := recordOld(t, oldAddr, manifests)
+
+	// A candidate that behaves like the old proxy, except that every other
+	// request for /app/ fails. One sample can land on either answer.
+	var requests, appRequests atomic.Int64
+	old := oldProxy()
+	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Host == "slash.example.com" && r.RequestURI == "/app/" && appRequests.Add(1)%2 == 0 {
+			http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		old.ServeHTTP(w, r)
+	}))
+	defer flaky.Close()
+	addr := flaky.Listener.Addr().String()
+
+	// One at a time, so the alternation is deterministic.
+	got := run(t, "", "verify", baseline, "--address", addr, "--rate", "0", "--concurrency", "1", "--samples", "4", "-o", "json")
+	res := decodeDiff(t, got.stdout)
+	if got.code != ExitOK {
+		t.Errorf("exit code = %d, want %d: an unstable endpoint is unverified, not different", got.code, ExitOK)
+	}
+	if want := int64(4 * res.Summary.Probes); requests.Load() != want {
+		t.Errorf("the endpoint received %d requests, want %d (4 samples of %d probes)", requests.Load(), want, res.Summary.Probes)
+	}
+	var app model.Comparison
+	for _, c := range res.Comparisons {
+		if c.Probe.Host == "slash.example.com" && c.Probe.RawTarget == "/app/" {
+			app = c
+		}
+	}
+	if app.Verdict != model.VerdictUnverified || !strings.Contains(app.Reason, "the candidate gave 2 different answers to 4 identical requests") {
+		t.Errorf("/app/: verdict %q, reason %q; want UNVERIFIED naming the inconsistency", app.Verdict, app.Reason)
+	}
+	if res.Summary.Diff != 0 || res.Summary.Unverified != 1 {
+		t.Errorf("summary = %+v, want no differences and one unverified probe", res.Summary)
+	}
+
+	if strict := run(t, "", "verify", baseline, "--address", addr, "--rate", "0", "--concurrency", "1", "--samples", "4", "--strict"); strict.code != ExitUnverified {
+		t.Errorf("exit code with --strict = %d, want %d", strict.code, ExitUnverified)
 	}
 }

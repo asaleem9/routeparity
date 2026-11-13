@@ -75,6 +75,7 @@ func NewRootCommand(streams Streams) *cobra.Command {
 	root.AddCommand(newRecordCommand(streams))
 	root.AddCommand(newDiffCommand(streams))
 	root.AddCommand(newLiveCommand(streams))
+	root.AddCommand(newVerifyCommand(streams))
 	root.AddCommand(newExplainCommand(streams))
 	return root
 }
