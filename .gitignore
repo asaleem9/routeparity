@@ -1,0 +1,20 @@
+# Build output
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Editor and OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local tooling
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+
+# Lab artefacts
+*.kubeconfig
+/.routeparity/

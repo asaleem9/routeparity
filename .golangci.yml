@@ -1,0 +1,48 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - misspell
+    - nilerr
+    - revive
+    - unconvert
+    - unparam
+  settings:
+    errcheck:
+      exclude-functions:
+        # Writes to the terminal and to in-memory hashes: nothing useful can
+        # be done with an error from either.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: error-strings
+        - name: receiver-naming
+        - name: var-naming
+        - name: unused-parameter
+  exclusions:
+    rules:
+      # Kubernetes type names such as "Ingress default/web" start error
+      # strings with a capital on purpose.
+      - linters: [revive, staticcheck]
+        text: "error strings should not be capitalized"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/asaleem9/routeparity
