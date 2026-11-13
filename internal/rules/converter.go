@@ -12,7 +12,10 @@ import (
 // converter is the authority on what it did not translate, so this rule
 // reports what it says rather than keeping a second list that could drift
 // from the converter version in use.
-type converterNotice struct{ auditOnly }
+type converterNotice struct {
+	noProbes
+	noExplain
+}
 
 func (converterNotice) Meta() Meta {
 	return Meta{

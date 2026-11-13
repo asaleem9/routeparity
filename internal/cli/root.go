@@ -71,6 +71,11 @@ func NewRootCommand(streams Streams) *cobra.Command {
 	root.SetVersionTemplate("routeparity {{.Version}}\n")
 
 	root.AddCommand(newAuditCommand(streams))
+	root.AddCommand(newProbesCommand(streams))
+	root.AddCommand(newRecordCommand(streams))
+	root.AddCommand(newDiffCommand(streams))
+	root.AddCommand(newLiveCommand(streams))
+	root.AddCommand(newVerifyCommand(streams))
 	root.AddCommand(newExplainCommand(streams))
 	return root
 }
