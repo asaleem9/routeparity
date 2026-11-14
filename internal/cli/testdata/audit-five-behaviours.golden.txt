@@ -88,6 +88,18 @@ MEDIUM  NGX-TLS-001  Hosts with TLS redirect HTTP to HTTPS
                   scheme: https
                   statusCode: 308
 
+MEDIUM  NGX-TLS-002  HTTPS responses carry an HSTS header
+        path-normalization.example.com
+        ingress-nginx adds a Strict-Transport-Security header to HTTPS responses for this host
+        unless the controller's ConfigMap turns hsts off. The Gateway needs a filter to send it.
+        fix: Add the header on the routes attached to the HTTPS listener.
+            filters:
+            - type: ResponseHeaderModifier
+              responseHeaderModifier:
+                set:
+                - name: Strict-Transport-Security
+                  value: max-age=31536000; includeSubDomains
+
 MEDIUM  NGX-SLASH-001  A path ending in a slash redirects the slashless request
         trailing-slash.example.com /my-path/  ·  Ingress/demo/trailing-slash
         ingress-nginx answers "/my-path" with a 301 redirect to "/my-path/". Without an explicit
@@ -110,6 +122,6 @@ LOW     NGX-NORM-001  Request paths are normalised before matching
         implementation normalises paths cannot be determined from manifests; it has to be measured
         with requests.
 
-Summary: 4 high · 7 medium · 1 low · 0 info
+Summary: 4 high · 8 medium · 1 low · 0 info
 These are predictions from the manifests. No requests were sent, so none of them is confirmed, and
 behaviour that depends on controller settings or on the Gateway implementation is not covered.
