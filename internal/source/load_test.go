@@ -215,3 +215,54 @@ func TestLoadPaths(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadCarriesGatewayObjectsItHasNoTypeFor(t *testing.T) {
+	manifests := `
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata: {name: grpc, namespace: shop}
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata: {name: grant, namespace: shop}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata: {name: auth, namespace: shop}
+spec:
+  futureField: {anything: goes}
+---
+apiVersion: gateway.networking.x-k8s.io/v1alpha1
+kind: XListenerSet
+metadata: {name: extra, namespace: shop}
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata: {name: vs, namespace: shop}
+`
+	res, err := Load(strings.NewReader(manifests), "test")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var kinds []string
+	for _, obj := range res.Objects.GatewayExtras {
+		kinds = append(kinds, obj.GetKind())
+	}
+	// A policy is part of the Gateway configuration even though this tool
+	// does not interpret it: a lab run that left it out would test a
+	// different configuration from the one the user wrote.
+	want := []string{"GRPCRoute", "ReferenceGrant", "SecurityPolicy", "XListenerSet"}
+	if strings.Join(kinds, ",") != strings.Join(want, ",") {
+		t.Errorf("carried kinds = %v, want %v", kinds, want)
+	}
+	// Carried objects are passed through whole, including fields unknown here.
+	if _, found := res.Objects.GatewayExtras[2].Object["spec"].(map[string]any)["futureField"]; !found {
+		t.Error("an unknown field of a carried object was dropped")
+	}
+	if res.Ignored["networking.istio.io/VirtualService"] != 1 || len(res.Ignored) != 1 {
+		t.Errorf("Ignored = %v, want only the VirtualService", res.Ignored)
+	}
+	if len(res.Warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", res.Warnings)
+	}
+}
