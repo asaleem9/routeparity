@@ -5,12 +5,15 @@
 //
 //	make e2e
 //
-// ROUTEPARITY_E2E_CLUSTER names the cluster (default routeparity-e2e) and
-// ROUTEPARITY_E2E_KEEP=1 leaves it running, which makes a second run fast.
+// The tests share one cluster, which TestMain deletes at the end.
+// ROUTEPARITY_E2E_CLUSTER names it (default routeparity-e2e) and
+// ROUTEPARITY_E2E_KEEP=1 leaves it running, which makes the next run fast.
 package e2e
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -22,6 +25,34 @@ import (
 	"github.com/asaleem9/routeparity/internal/prober"
 	"github.com/asaleem9/routeparity/internal/source"
 )
+
+// TestMain removes the cluster when the tests are done. Every test leaves it
+// running for the next, which is what makes the suite take a minute or two
+// and not a minute or two per test.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if os.Getenv("ROUTEPARITY_E2E_KEEP") != "1" {
+		if err := lab.DeleteCluster(clusterName(), ""); err != nil && !errors.Is(err, lab.ErrNoCluster) {
+			fmt.Fprintln(os.Stderr, "could not delete the test cluster:", err)
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+
+func clusterName() string { return env("ROUTEPARITY_E2E_CLUSTER", "routeparity-e2e") }
+
+func labOptions(t *testing.T) lab.Options {
+	return lab.Options{
+		ClusterName: clusterName(),
+		EchoImage:   env("ROUTEPARITY_E2E_ECHO_IMAGE", "routeparity-echo:dev"),
+		Keep:        true, // TestMain deletes it
+		Probes:      probe.Options{Mutations: true},
+		Send:        prober.Options{Concurrency: 8},
+		ToolVersion: "e2e",
+		Progress:    func(format string, args ...any) { t.Logf(format, args...) },
+	}
+}
 
 func env(name, fallback string) string {
 	if v := os.Getenv(name); v != "" {
@@ -39,19 +70,11 @@ func loadWorld(t *testing.T, manifests string) *model.World {
 	return model.NewWorld(res.Objects, model.WorldOptions{})
 }
 
-func record(t *testing.T, w *model.World, keep bool) *model.Snapshot {
+func record(t *testing.T, w *model.World) *model.Snapshot {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
-	snap, err := lab.RecordBaseline(ctx, w, lab.Options{
-		ClusterName: env("ROUTEPARITY_E2E_CLUSTER", "routeparity-e2e"),
-		EchoImage:   env("ROUTEPARITY_E2E_ECHO_IMAGE", "routeparity-echo:dev"),
-		Keep:        keep,
-		Probes:      probe.Options{Mutations: true},
-		Send:        prober.Options{Concurrency: 8},
-		ToolVersion: "e2e",
-		Progress:    func(format string, args ...any) { t.Logf(format, args...) },
-	})
+	snap, err := lab.RecordBaseline(ctx, w, labOptions(t))
 	if err != nil {
 		t.Fatalf("RecordBaseline: %v", err)
 	}
@@ -66,6 +89,8 @@ type answer struct {
 	backend string
 	// received is the request-target the backend saw.
 	received string
+	// hsts is the Strict-Transport-Security response header.
+	hsts string
 }
 
 func answers(t *testing.T, snap *model.Snapshot) map[string]answer {
@@ -85,6 +110,9 @@ func answers(t *testing.T, snap *model.Snapshot) map[string]answer {
 		if loc := model.HeaderValues(obs.Client.Headers, "Location"); len(loc) > 0 {
 			a.location = loc[0]
 		}
+		if v := model.HeaderValues(obs.Client.Headers, "Strict-Transport-Security"); len(v) > 0 {
+			a.hsts = v[0]
+		}
 		if obs.Backend != nil {
 			a.backend, a.received = obs.Backend.Service, obs.Backend.RawTarget
 		}
@@ -103,7 +131,7 @@ func TestFiveBehaviours(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap := record(t, loadWorld(t, string(data)), true)
+	snap := record(t, loadWorld(t, string(data)))
 	got := answers(t, snap)
 
 	routedTo := func(t *testing.T, request, service, received string) {
@@ -181,6 +209,13 @@ func TestFiveBehaviours(t *testing.T) {
 		// Variations go over HTTPS, where the path is actually matched.
 		routedTo(t, "https://path-normalization.example.com/rp-x/../uuid", "httpbin", "/rp-x/../uuid")
 		notRouted(t, "https://path-normalization.example.com/UUID")
+		// The header NGX-TLS-002 is about: added by the controller, on HTTPS only.
+		if got := got["https://path-normalization.example.com/uuid"].hsts; got != "max-age=31536000; includeSubDomains" {
+			t.Errorf("Strict-Transport-Security on the HTTPS response = %q, want max-age=31536000; includeSubDomains", got)
+		}
+		if got := got["http://regex-match.example.com/AAA"].hsts; got != "" {
+			t.Errorf("Strict-Transport-Security on a plain HTTP response = %q, want none", got)
+		}
 	})
 
 	t.Run("an unknown host is not routed", func(t *testing.T) {
@@ -239,8 +274,7 @@ spec:
         backend:
           service: {name: httpbin, port: {number: 8000}}
 `
-	keep := os.Getenv("ROUTEPARITY_E2E_KEEP") == "1"
-	got := answers(t, record(t, loadWorld(t, bystanderOnly), keep))
+	got := answers(t, record(t, loadWorld(t, bystanderOnly)))
 
 	if a := got["http://regex-match.example.com/Header"]; a.status != 200 || a.backend != "httpbin" {
 		t.Errorf("/Header: status %d, backend %q; want it routed", a.status, a.backend)
