@@ -10,6 +10,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/asaleem9/routeparity/internal/model"
 	"github.com/asaleem9/routeparity/internal/source"
@@ -26,7 +27,7 @@ func world(t *testing.T, manifests string, opts model.WorldOptions) *model.World
 
 func plan(t *testing.T, manifests string) *Plan {
 	t.Helper()
-	p, err := BuildPlan(world(t, manifests, model.WorldOptions{}), "echo:test")
+	p, err := BuildPlan(world(t, manifests, model.WorldOptions{}), nil, "echo:test")
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
@@ -112,14 +113,16 @@ func TestBuildPlanReplacesEveryServiceWithTheEcho(t *testing.T) {
 		t.Errorf("namespaces (-want +got):\n%s", diff)
 	}
 
-	// One echo per namespace, listening on one port per (Service, port) the
-	// Ingresses route to. The same pair used twice gets one listener.
+	// One echo per namespace, listening on one port per Service port the
+	// Ingresses route to. A port is identified by its number wherever the
+	// number is known, so that an Ingress saying "metrics" and a route
+	// saying 9102 are seen to reach the same backend.
 	wantArgs := []string{
 		"--admin", ":9090",
 		"--listen", "shop/api:http=:8000",
 		"--listen", "shop/fallback:80=:8001",
 		"--listen", "shop/web:80=:8002",
-		"--listen", "shop/web:metrics=:8003",
+		"--listen", "shop/web:9102=:8003",
 	}
 	shop := deployments["shop"]
 	if shop == nil {
@@ -154,13 +157,14 @@ func TestBuildPlanReplacesEveryServiceWithTheEcho(t *testing.T) {
 		}
 		return out
 	}
-	// A numbered backend port keeps its number. A named one keeps its name,
-	// with the number from the original Service when the manifests have it.
-	if diff := cmp.Diff([]port{{"p80", 80, 8002}, {"metrics", 9102, 8003}}, ports("shop/web")); diff != "" {
+	// The original Service says port 80 is called http and metrics is 9102.
+	// The lab's Service keeps both the names and the numbers, so a backend
+	// reference resolves whichever way it is written.
+	if diff := cmp.Diff([]port{{"http", 80, 8002}, {"metrics", 9102, 8003}}, ports("shop/web")); diff != "" {
 		t.Errorf("shop/web ports (-want +got):\n%s", diff)
 	}
-	// Without the original Service any number will do; the name is what the
-	// Ingress resolves.
+	// Without the original Service only the name is known. Any number will
+	// do; the name is what the Ingress resolves.
 	if diff := cmp.Diff([]port{{"http", 8000, 8000}}, ports("shop/api")); diff != "" {
 		t.Errorf("shop/api ports (-want +got):\n%s", diff)
 	}
@@ -234,7 +238,7 @@ status:
 
 func TestLabIngress(t *testing.T) {
 	w := world(t, annotatedIngress, model.WorldOptions{IngressClass: "nginx-internal"})
-	p, err := BuildPlan(w, "echo:test")
+	p, err := BuildPlan(w, nil, "echo:test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +308,7 @@ func TestLabIngress(t *testing.T) {
 
 func TestBackendProtocolOtherThanHTTPIsRemoved(t *testing.T) {
 	manifest := strings.Replace(annotatedIngress, "backend-protocol: HTTP", "backend-protocol: GRPC", 1)
-	p, err := BuildPlan(world(t, manifest, model.WorldOptions{IngressClass: "nginx-internal"}), "echo:test")
+	p, err := BuildPlan(world(t, manifest, model.WorldOptions{IngressClass: "nginx-internal"}), nil, "echo:test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,5 +419,201 @@ func TestSentinel(t *testing.T) {
 	empty := &Plan{}
 	if ing, _ := empty.Sentinel("x"); ing != nil {
 		t.Error("a plan with no echo Service returned a sentinel")
+	}
+}
+
+// candidateFrom loads Gateway API manifests the way --gateway does.
+func candidateFrom(t *testing.T, manifests string) *Candidate {
+	t.Helper()
+	res, err := source.Load(strings.NewReader(manifests), "gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Candidate{Gateways: res.Objects.Gateways, HTTPRoutes: res.Objects.HTTPRoutes, Other: res.Objects.GatewayExtras, Source: "test"}
+}
+
+const gatewayManifests = `
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: production
+spec:
+  controllerName: example.com/controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: shop
+  namespace: shop
+  resourceVersion: "999"
+  uid: 1b1b1b1b-0000-0000-0000-000000000000
+spec:
+  gatewayClassName: production
+  addresses:
+  - {type: IPAddress, value: 203.0.113.7}
+  listeners:
+  - {name: http, port: 80, protocol: HTTP}
+  - name: https
+    port: 443
+    protocol: HTTPS
+    hostname: shop.example.com
+    tls:
+      certificateRefs:
+      - {name: shop-gateway-cert}
+status:
+  conditions: [{type: Programmed, status: "True", reason: Programmed, message: "", lastTransitionTime: "2026-01-01T00:00:00Z"}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: shop
+  namespace: shop
+spec:
+  parentRefs: [{name: shop}]
+  hostnames: [shop.example.com]
+  rules:
+  - matches: [{path: {type: PathPrefix, value: /}}]
+    backendRefs:
+    - {name: web, port: 80}
+  - matches: [{path: {type: Exact, value: /metrics}}]
+    backendRefs:
+    - {name: web, port: 9102}
+  - matches: [{path: {type: PathPrefix, value: /new}}]
+    filters:
+    - type: RequestMirror
+      requestMirror:
+        backendRef: {name: shadow, port: 8080}
+    backendRefs:
+    - {name: web-v2, port: 80}
+    - {name: bucket, kind: Bucket, group: storage.example.com}
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow
+  namespace: shop
+  resourceVersion: "5"
+spec:
+  from: [{group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: other}]
+  to: [{group: "", kind: Service}]
+`
+
+func TestBuildPlanWithACandidate(t *testing.T) {
+	w := world(t, backendsManifests, model.WorldOptions{})
+	p, err := BuildPlan(w, candidateFrom(t, gatewayManifests), "echo:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var shopArgs []string
+	secrets := map[string]bool{}
+	for _, obj := range p.Support {
+		switch o := obj.(type) {
+		case *appsv1.Deployment:
+			if o.Namespace == "shop" {
+				shopArgs = o.Spec.Template.Spec.Containers[0].Args
+			}
+		case *corev1.Secret:
+			secrets[o.Namespace+"/"+o.Name] = true
+		}
+	}
+	// The Ingress says web:metrics and the route says web:9102. They are the
+	// same port, so there is one listener, and both sides will be seen to
+	// reach it. Services only the routes use get an echo too.
+	want := []string{
+		"--admin", ":9090",
+		"--listen", "shop/api:http=:8000",
+		"--listen", "shop/fallback:80=:8001",
+		"--listen", "shop/shadow:8080=:8002",
+		"--listen", "shop/web:80=:8003",
+		"--listen", "shop/web:9102=:8004",
+		"--listen", "shop/web-v2:80=:8005",
+	}
+	if diff := cmp.Diff(want, shopArgs); diff != "" {
+		t.Errorf("echo arguments in shop (-want +got):\n%s", diff)
+	}
+	if !secrets["shop/shop-gateway-cert"] {
+		t.Errorf("no certificate was generated for the Gateway's HTTPS listener; secrets: %v", secrets)
+	}
+
+	var reported []string
+	for _, u := range p.Unverified {
+		reported = append(reported, u.Feature)
+	}
+	if diff := cmp.Diff([]string{"backend bucket is a Bucket"}, reported); diff != "" {
+		t.Errorf("unverified (-want +got):\n%s", diff)
+	}
+}
+
+func TestCandidateLabObjects(t *testing.T) {
+	c := candidateFrom(t, gatewayManifests)
+	objs, gateways, routes, err := c.labObjects("routeparity")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var kinds []string
+	for _, obj := range objs {
+		kinds = append(kinds, obj.GetKind())
+		if obj.GetResourceVersion() != "" || obj.GetUID() != "" {
+			t.Errorf("%s %s keeps metadata from the cluster it was exported from", obj.GetKind(), obj.GetName())
+		}
+		if _, hasStatus := obj.Object["status"]; hasStatus {
+			t.Errorf("%s %s keeps its status", obj.GetKind(), obj.GetName())
+		}
+	}
+	// The user's GatewayClass is left out: the lab runs its own. Routes go
+	// last, after the Gateways and grants they depend on.
+	if diff := cmp.Diff([]string{"Gateway", "ReferenceGrant", "HTTPRoute"}, kinds); diff != "" {
+		t.Errorf("kinds, in apply order (-want +got):\n%s", diff)
+	}
+
+	gw := objs[0]
+	if class, _, _ := unstructured.NestedString(gw.Object, "spec", "gatewayClassName"); class != "routeparity" {
+		t.Errorf("gatewayClassName = %q, want the lab's class", class)
+	}
+	if _, found := gw.Object["spec"].(map[string]any)["addresses"]; found {
+		t.Error("the Gateway keeps the addresses requested in its source cluster")
+	}
+	if len(gateways) != 1 || gateways[0].String() != "shop/shop" || len(routes) != 1 || routes[0].String() != "shop/shop" {
+		t.Errorf("gateways = %v, routes = %v", gateways, routes)
+	}
+	// The candidate itself is not modified.
+	if c.Gateways[0].Spec.GatewayClassName != "production" || c.Gateways[0].ResourceVersion != "999" {
+		t.Error("labObjects changed the candidate's own Gateway")
+	}
+}
+
+func TestCandidateEmpty(t *testing.T) {
+	var none *Candidate
+	if !none.Empty() || !(&Candidate{}).Empty() {
+		t.Error("a candidate with no Gateway and no HTTPRoute is not reported as empty")
+	}
+	if candidateFrom(t, gatewayManifests).Empty() {
+		t.Error("a candidate with routes is reported as empty")
+	}
+}
+
+func TestGatewaySentinel(t *testing.T) {
+	p := plan(t, backendsManifests)
+	gw, route, host := p.GatewaySentinel("abcd", "routeparity")
+	if gw == nil || route == nil {
+		t.Fatal("no Gateway sentinel for a plan that has echo Services")
+	}
+	if !strings.HasSuffix(host, SentinelHostSuffix) || string(*gw.Spec.Listeners[0].Hostname) != host || string(route.Spec.Hostnames[0]) != host {
+		t.Errorf("host %q is not on both the listener and the route", host)
+	}
+	if string(gw.Spec.GatewayClassName) != "routeparity" || gw.Spec.Listeners[0].Port != 80 {
+		t.Errorf("sentinel Gateway: class %q, port %d", gw.Spec.GatewayClassName, gw.Spec.Listeners[0].Port)
+	}
+	if string(route.Spec.ParentRefs[0].Name) != gw.Name || route.Namespace != gw.Namespace {
+		t.Error("the sentinel route is not attached to the sentinel Gateway")
+	}
+	ref := route.Spec.Rules[0].BackendRefs[0]
+	if string(ref.Name) != "web" || ref.Port == nil || *ref.Port != 8080 || route.Namespace != "blog" {
+		t.Errorf("sentinel route sends to %s/%s:%v, want an echo Service the plan creates", route.Namespace, ref.Name, ref.Port)
+	}
+	if g, r, _ := (&Plan{}).GatewaySentinel("x", "c"); g != nil || r != nil {
+		t.Error("a plan with no echo Service returned a Gateway sentinel")
 	}
 }
