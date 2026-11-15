@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
@@ -26,6 +27,11 @@ type Objects struct {
 	Services   []corev1.Service
 	Gateways   []gatewayv1.Gateway
 	HTTPRoutes []gatewayv1.HTTPRoute
+	// GatewayExtras are other objects from the Gateway API groups and from
+	// implementations' own groups, such as GRPCRoutes, ReferenceGrants and
+	// policies. They are not interpreted, only carried, so that a lab run
+	// applies the Gateway configuration whole.
+	GatewayExtras []unstructured.Unstructured
 }
 
 // WorldOptions controls which Ingresses are considered.
@@ -52,9 +58,10 @@ type World struct {
 	// when this is non-zero the precedence order is a guess.
 	UndatedIngresses int
 
-	Services   map[types.NamespacedName]corev1.Service
-	Gateways   []gatewayv1.Gateway
-	HTTPRoutes []gatewayv1.HTTPRoute
+	Services      map[types.NamespacedName]corev1.Service
+	Gateways      []gatewayv1.Gateway
+	HTTPRoutes    []gatewayv1.HTTPRoute
+	GatewayExtras []unstructured.Unstructured
 
 	// Hosts is every host served, sorted by name. Rules without a host are
 	// collected under the empty name.
@@ -189,10 +196,11 @@ func NewWorld(objs Objects, opts WorldOptions) *World {
 		class = DefaultIngressClass
 	}
 	w := &World{
-		IngressClass: class,
-		Services:     make(map[types.NamespacedName]corev1.Service, len(objs.Services)),
-		Gateways:     objs.Gateways,
-		HTTPRoutes:   objs.HTTPRoutes,
+		IngressClass:  class,
+		Services:      make(map[types.NamespacedName]corev1.Service, len(objs.Services)),
+		Gateways:      objs.Gateways,
+		HTTPRoutes:    objs.HTTPRoutes,
+		GatewayExtras: objs.GatewayExtras,
 	}
 	for _, svc := range objs.Services {
 		w.Services[types.NamespacedName{Namespace: svc.Namespace, Name: svc.Name}] = svc

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/discovery/cached/memory"
@@ -24,8 +24,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
-	"k8s.io/client-go/tools/portforward"
-	"k8s.io/client-go/transport/spdy"
 )
 
 // fieldManager names this tool as the owner of what it applies.
@@ -40,6 +38,11 @@ type kube struct {
 }
 
 func newKube(config *rest.Config) (*kube, error) {
+	// The lab lists every Gateway API kind, including versions the API server
+	// marks as deprecated. Its warnings about that are addressed to whoever
+	// wrote the manifests, and here nobody did.
+	config = rest.CopyConfig(config)
+	config.WarningHandler = rest.NoWarnings{}
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, err
@@ -88,12 +91,7 @@ func toUnstructured(objs ...runtime.Object) ([]*unstructured.Unstructured, error
 func (k *kube) apply(ctx context.Context, objs []*unstructured.Unstructured) error {
 	for _, obj := range objs {
 		gvk := obj.GroupVersionKind()
-		mapping, err := k.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-		if meta.IsNoMatchError(err) {
-			// The kind may have been registered after discovery was cached.
-			k.mapper.Reset()
-			mapping, err = k.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-		}
+		mapping, err := k.mapping(ctx, gvk)
 		if err != nil {
 			return fmt.Errorf("%s %s: %w", gvk.Kind, obj.GetName(), err)
 		}
@@ -110,6 +108,40 @@ func (k *kube) apply(ctx context.Context, objs []*unstructured.Unstructured) err
 		}
 	}
 	return nil
+}
+
+// mapping resolves a kind to its API resource. A kind whose
+// CustomResourceDefinition was created a moment ago is not served yet, so an
+// unknown kind is retried for a while before it is an error.
+func (k *kube) mapping(ctx context.Context, gvk schema.GroupVersionKind) (*meta.RESTMapping, error) {
+	mapping, err := k.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err == nil || !meta.IsNoMatchError(err) {
+		return mapping, err
+	}
+	pollErr := wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, crdTimeout, true, func(context.Context) (bool, error) {
+		k.mapper.Reset()
+		mapping, err = k.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+		return err == nil, nil
+	})
+	if pollErr != nil && err == nil {
+		err = pollErr
+	}
+	return mapping, err
+}
+
+// crdTimeout is how long a newly created kind may take to be served.
+const crdTimeout = 30 * time.Second
+
+// resource returns the dynamic client for a kind in a namespace.
+func (k *kube) resource(ctx context.Context, gvk schema.GroupVersionKind, namespace string) (dynamic.ResourceInterface, error) {
+	mapping, err := k.mapping(ctx, gvk)
+	if err != nil {
+		return nil, err
+	}
+	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+		return k.dyn.Resource(mapping.Resource).Namespace(namespace), nil
+	}
+	return k.dyn.Resource(mapping.Resource), nil
 }
 
 // waitForDeployment blocks until the Deployment has all its replicas
@@ -192,48 +224,36 @@ func (k *kube) runningPod(ctx context.Context, namespace, selector string) (stri
 	return "", fmt.Errorf("no ready pod matches %q in namespace %s", selector, namespace)
 }
 
-// forward opens port-forwards from 127.0.0.1 to a pod's ports and returns
-// the local port for each remote port, in order. The forwards close when stop
-// is called.
-func (k *kube) forward(ctx context.Context, namespace, pod string, remotePorts ...int) (local []int, stop func(), err error) {
-	transport, upgrader, err := spdy.RoundTripperFor(k.config)
-	if err != nil {
-		return nil, nil, err
+// conditionProblems reads a list of status conditions and describes each of
+// the wanted types that is not True. A wanted condition that is missing
+// counts as a problem: no news from a controller is not good news.
+func conditionProblems(conditions []any, want ...string) []string {
+	seen := map[string]bool{}
+	var problems []string
+	for _, raw := range conditions {
+		cond, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		condType, _ := cond["type"].(string)
+		wanted := false
+		for _, w := range want {
+			wanted = wanted || w == condType
+		}
+		if !wanted {
+			continue
+		}
+		seen[condType] = true
+		if status, _ := cond["status"].(string); status != "True" {
+			reason, _ := cond["reason"].(string)
+			message, _ := cond["message"].(string)
+			problems = append(problems, strings.TrimSpace(fmt.Sprintf("%s is %s (%s) %s", condType, status, reason, message)))
+		}
 	}
-	url := k.client.CoreV1().RESTClient().Post().Resource("pods").Namespace(namespace).Name(pod).SubResource("portforward").URL()
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, url)
-
-	specs := make([]string, len(remotePorts))
-	for i, port := range remotePorts {
-		specs[i] = fmt.Sprintf("0:%d", port) // 0 lets the kernel pick a free local port
+	for _, w := range want {
+		if !seen[w] {
+			problems = append(problems, w+" was never reported")
+		}
 	}
-	stopCh, readyCh := make(chan struct{}), make(chan struct{})
-	fw, err := portforward.NewOnAddresses(dialer, []string{"127.0.0.1"}, specs, stopCh, readyCh, io.Discard, io.Discard)
-	if err != nil {
-		return nil, nil, err
-	}
-	failed := make(chan error, 1)
-	go func() { failed <- fw.ForwardPorts() }()
-
-	select {
-	case <-readyCh:
-	case err := <-failed:
-		return nil, nil, fmt.Errorf("port-forward to pod %s/%s: %w", namespace, pod, err)
-	case <-ctx.Done():
-		close(stopCh)
-		return nil, nil, ctx.Err()
-	}
-	ports, err := fw.GetPorts()
-	if err != nil {
-		close(stopCh)
-		return nil, nil, err
-	}
-	byRemote := map[uint16]uint16{}
-	for _, p := range ports {
-		byRemote[p.Remote] = p.Local
-	}
-	for _, remote := range remotePorts {
-		local = append(local, int(byRemote[uint16(remote)]))
-	}
-	return local, func() { close(stopCh) }, nil
+	return problems
 }

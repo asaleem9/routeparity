@@ -6,15 +6,14 @@ ingress-nginx was retired in March 2026, and a lot of clusters are moving to Gat
 
 ## Status
 
-This is early. Two things work today:
+This is early, and it works end to end:
 
+- `routeparity lab run` starts ingress-nginx and a Gateway implementation side by side on your machine, sends the same requests through both, and reports where they differ.
 - `routeparity audit` reads your Ingress manifests and predicts where a Gateway will behave differently. It sends no traffic.
-- `routeparity live` sends the same requests to two endpoints and compares what each did. `record` and `diff` do the same in two steps, with a snapshot file in between.
-- `routeparity verify` checks an endpoint against a saved snapshot, with JUnit and Markdown reports for CI.
+- `routeparity live` sends the same requests to two endpoints you already have and compares what each did. `record`, `diff` and `verify` do the same with a snapshot file in between, with JUnit and Markdown reports for CI.
+- `routeparity lab record` saves how real ingress-nginx treats your Ingresses, so you still have a reference once the controller is gone.
 
-- `routeparity lab record` runs your Ingresses on real ingress-nginx in a local cluster and records what it does, without touching any cluster of yours.
-
-What's missing is the Gateway half of the lab: starting your Gateway implementation next to ingress-nginx and comparing the two in one command. Today that half is a script. The [roadmap](#roadmap) has the order.
+The lab runs Envoy Gateway only for now, and there is no tagged release yet. The [roadmap](#roadmap) has what's next.
 
 ## Install
 
@@ -29,6 +28,76 @@ git clone https://github.com/asaleem9/routeparity.git
 cd routeparity
 make build        # writes bin/routeparity
 ```
+
+## Compare both on your laptop
+
+This needs Docker and, until the first release, the echo image built with `make echo-image`. Nothing touches a cluster of yours, and your kubeconfig is neither read nor written.
+
+```console
+$ routeparity lab run -f examples/five-behaviours/
+[  0s] starting kind cluster routeparity-lab (Kubernetes v1.35.8)
+[ 28s] loaded the local image routeparity-echo:dev into the cluster
+[ 28s] installing ingress-nginx v1.15.1
+[ 30s] installing envoy-gateway v1.10.0 (Gateway API v1.6.1)
+[ 50s] applying 6 Ingress(es) with 2 Service(s) replaced by the echo backend
+[ 50s] waiting for ingress-nginx to load the configuration
+[ 53s] sending 40 probe(s) to ingress-nginx
+[ 54s] applying 1 Gateway(s) and 6 HTTPRoute(s) from github.com/kubernetes-sigs/ingress2gateway@v1.2.0 (standard emitter)
+[ 54s] waiting for the envoy-gateway proxy
+[ 66s] sending 40 probe(s) to envoy-gateway
+
+routeparity diff  ingress-nginx (ingress-nginx, kind cluster routeparity-lab)  →  envoy-gateway (gateway-api, kind cluster routeparity-lab)
+  40 probes · 23 match · 17 differ · 0 unrouted · 0 unverified · 0 failed
+
+DIFF        GET https://path-normalization.example.com/uuid
+            from the configuration  ·  Ingress/demo/path-normalization
+            client.header.strict-transport-security  max-age=31536000; includeSubDomains  →  
+
+DIFF        GET http://regex-match.example.com//AAA
+            NGX-NORM-001, double-slash  ·  Ingress/demo/regex-match
+            backend.rawTarget  //AAA  →  /AAA
+
+...
+
+Result: The candidate behaves differently from the baseline on 17 probes.
+This is not a statement of parity: 9 features were not exercised at all.
+```
+
+With only `-f`, the Gateway side is what [ingress2gateway](https://github.com/kubernetes-sigs/ingress2gateway) produces for your Ingresses. Every Service is replaced by `routeparity-echo`, which reports the request it received, so the comparison covers what each proxy forwarded and not only what the client got back.
+
+That run is the converter's output, measured. It says three things:
+
+- The converter gets the hard parts right on Envoy Gateway. Case-insensitive regex matching, regex mode leaking across Ingresses, `rewrite-target`, the trailing-slash redirect and the redirect to HTTPS all match. Its own behaviour tests run on Istio, so this was not a given.
+- Sixteen probes return the same status and differ at the backend. ingress-nginx forwards `//AAA` as sent; Envoy Gateway forwards `/AAA`. An application that logs, signs or routes on the raw path sees a change.
+- ingress-nginx adds an HSTS header to HTTPS responses and the Gateway does not. Nothing in the Ingress asks for that header, and the converter does not mention it. I found it by running this.
+
+To test routes you wrote yourself, pass them with `--gateway`. The example below copies each Ingress path into an HTTPRoute match and adds nothing else, which is what a careful person does by hand:
+
+```console
+$ routeparity lab run -f examples/five-behaviours/ --gateway examples/five-behaviours-gateway/
+...
+  40 probes · 15 match · 25 differ · 0 unrouted · 0 unverified · 0 failed
+
+DIFF        GET http://regex-match.example.com/hEADER
+            NGX-REGEX-002, case-flip  ·  Ingress/demo/regex-match-other
+            routed           routed  →  not routed
+            client.status    200  →  404
+            backend.reached  demo/httpbin:8000  →  not reached
+
+DIFF        GET http://trailing-slash.example.com/my-path
+            NGX-SLASH-001, strip-slash  ·  Ingress/demo/trailing-slash
+            routed           routed  →  not routed
+            client.status    301  →  404
+            client.location  http://trailing-slash.example.com/my-path/  →  
+
+...
+```
+
+The paths written in the manifests all match, which is why that translation looks finished. The 25 differences are one step away from them, and each names the rule that explains it: `routeparity explain NGX-REGEX-002`.
+
+`--keep` leaves the cluster running. The second run above took 35 seconds that way, against 67 for the first. `routeparity lab down` deletes it. `--emitter envoy-gateway` converts with that emitter instead, and `--junit`, `--markdown` and `--strict` work as they do for `verify`.
+
+What the lab cannot stand in for is listed under "Not verified" in every report: [the list is below](#record-ingress-nginx-on-your-laptop).
 
 ## Audit your manifests
 
@@ -72,7 +141,7 @@ HIGH    NGX-REGEX-002  Regex mode applies to every path on the host
 
 ...
 
-Summary: 4 high · 7 medium · 1 low · 0 info
+Summary: 4 high · 8 medium · 1 low · 0 info
 ```
 
 `routeparity explain` lists the rules, and `routeparity explain NGX-REGEX-002` describes one with its sources.
@@ -189,11 +258,12 @@ Three results are never reported as a match. If neither endpoint routes a path t
 | `NGX-REGEX-003` | high | `rewrite-target` turns regex mode on, with the same host-wide effect. |
 | `NGX-SLASH-001` | medium | For an Exact or Prefix path ending in `/`, a request without the slash gets a 301 to the path with it. |
 | `NGX-TLS-001` | medium | A host with TLS redirects plain HTTP to HTTPS with a 308, unless the Ingress sets `ssl-redirect: "false"`. |
+| `NGX-TLS-002` | medium | HTTPS responses for a host with TLS carry `Strict-Transport-Security: max-age=31536000; includeSubDomains`. |
 | `NGX-CONFLICT-001` | medium | When two Ingresses define the same host and path, the older Ingress wins. |
 | `NGX-CONVERT-001` | varies | ingress2gateway reported an annotation or feature it could not translate. |
 | `NGX-NORM-001` | low | Request paths are normalised (`.`, `..`, `//`) before matching. |
 
-The regex, trailing-slash and normalisation rules come from the Kubernetes blog post [Before You Migrate: Five Surprising Ingress-NGINX Behaviors You Need to Know](https://kubernetes.io/blog/2026/02/27/ingress-nginx-before-you-migrate/). I don't take the post's word for it: `e2e/lab_test.go` reproduces each of the five on real ingress-nginx, and CI runs it on every change.
+The regex, trailing-slash and normalisation rules come from the Kubernetes blog post [Before You Migrate: Five Surprising Ingress-NGINX Behaviors You Need to Know](https://kubernetes.io/blog/2026/02/27/ingress-nginx-before-you-migrate/). I don't take the post's word for it: `e2e/lab_test.go` reproduces each of the five on real ingress-nginx, and CI runs it on every change. `NGX-TLS-002` is not in the post. It turned up as a difference in a lab run, and the same test now checks it.
 
 `NGX-CONVERT-001` runs [ingress2gateway](https://github.com/kubernetes-sigs/ingress2gateway) in process and reports its warnings, so the list of untranslated features always matches the converter version in the binary. Anything that controls access, such as `auth-url` or a source-range allow list, is raised to high, because losing it means serving requests that used to be rejected.
 
@@ -238,21 +308,23 @@ Things to know before you rely on it:
 - It runs ingress-nginx 1.15.1, the final release, with default settings. If your controller is older or has a customised ConfigMap, its behaviour can differ from what the lab records.
 - Annotations that need something the lab doesn't have are removed before applying and listed as not verified: external authentication, source-range allow lists, rate limits, snippets, and anything that makes the backend speak a protocol other than HTTP. The paths under those Ingresses are still recorded, without the removed behaviour.
 - Until there is a release with a published image, build the echo image first with `make echo-image`.
-- Against a real Gateway, `verify` compares the client's side only. Comparing what the Gateway forwards needs the echo behind it too, which is the half of the lab that isn't a command yet. `hack/lab-spike.sh` does it by hand for Envoy Gateway.
+- Against a real Gateway, `verify` compares the client's side only. What the Gateway forwards to the backend is only visible with the echo behind it, which is what `lab run` sets up.
 
-## What `live` doesn't do yet
+## What it doesn't do yet
 
 - It speaks HTTP/1.1. No HTTP/2 and no gRPC.
 - It sends GET requests. Behaviour that only shows on other methods or on request bodies, such as a body size limit or a CORS preflight, is not exercised.
 - A path behind a weighted canary is requested ten times. If the answers vary, which they should, it is reported as `UNVERIFIED`. Checking that the split itself is the same on both sides needs a statistical comparison, which isn't there. Canaries selected by header or cookie aren't probed with that header or cookie yet.
 - Patterns that only PCRE accepts, such as lookaheads, can't be turned into a matching path. They are listed as not verified.
 - It doesn't explain a difference beyond naming the rule. Fix suggestions are in `audit` for now.
+- The lab runs Envoy Gateway 1.10.0 only. Other implementations match regular expressions and normalise paths differently, so a result for one says little about another.
+- The lab probes HTTP and HTTPS on ports 80 and 443. Listeners on other ports are applied and not probed.
 
 ## Roadmap
 
-1. The Gateway half of the lab: start a Gateway implementation next to ingress-nginx from your own manifests, or from ingress2gateway's output, and compare the two in one command.
-2. Explanations and fixes attached to each observed difference.
-3. A published table of how Envoy Gateway, NGINX Gateway Fabric and Istio each differ from ingress-nginx, regenerated on a schedule.
+1. Explanations and fixes attached to each observed difference, and a first tagged release with binaries and a published echo image.
+2. NGINX Gateway Fabric and Istio in the lab.
+3. A published table of how each implementation differs from ingress-nginx, regenerated on a schedule.
 
 ## Development
 

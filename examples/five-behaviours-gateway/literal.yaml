@@ -1,0 +1,109 @@
+# A literal, by-hand translation of examples/five-behaviours/ingress.yaml:
+# each Ingress path becomes an HTTPRoute match of the same type and value,
+# and nothing is added for behaviour that ingress-nginx supplies on its own.
+# It applies cleanly and looks right. Run it to see where it isn't:
+#
+#   routeparity lab run -f examples/five-behaviours/ --gateway examples/five-behaviours-gateway/
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo
+  namespace: demo
+spec:
+  # Any class name works here: the lab assigns its own.
+  gatewayClassName: example
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+  - name: https
+    port: 443
+    protocol: HTTPS
+    hostname: path-normalization.example.com
+    tls:
+      certificateRefs:
+      - name: path-normalization-tls
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: regex-match
+  namespace: demo
+spec:
+  parentRefs:
+  - name: demo
+  hostnames: ["regex-match.example.com"]
+  rules:
+  - matches:
+    - path: {type: RegularExpression, value: "/[A-Z]{3}"}
+    backendRefs:
+    - {name: httpbin, port: 8000}
+  - matches:
+    - path: {type: Exact, value: "/Header"}
+    backendRefs:
+    - {name: httpbin, port: 8000}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rewrite-target
+  namespace: demo
+spec:
+  parentRefs:
+  - name: demo
+  hostnames: ["rewrite-target.example.com"]
+  rules:
+  - matches:
+    - path: {type: Exact, value: "/IP"}
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path: {type: ReplaceFullPath, replaceFullPath: "/uuid"}
+    backendRefs:
+    - {name: httpbin, port: 8000}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: trailing-slash
+  namespace: demo
+spec:
+  parentRefs:
+  - name: demo
+  hostnames: ["trailing-slash.example.com"]
+  rules:
+  - matches:
+    - path: {type: Exact, value: "/my-path/"}
+    backendRefs:
+    - {name: httpbin, port: 8000}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: path-normalization
+  namespace: demo
+spec:
+  parentRefs:
+  - name: demo
+  hostnames: ["path-normalization.example.com"]
+  rules:
+  - matches:
+    - path: {type: Exact, value: "/uuid"}
+    backendRefs:
+    - {name: httpbin, port: 8000}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: admin
+  namespace: demo
+spec:
+  parentRefs:
+  - name: demo
+  hostnames: ["admin.example.com"]
+  rules:
+  - matches:
+    - path: {type: PathPrefix, value: "/"}
+    backendRefs:
+    - {name: admin, port: 8080}

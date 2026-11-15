@@ -65,14 +65,14 @@ func DiffText(w io.Writer, res *diff.Result, style Style) error {
 	if len(res.Unverified) > 0 {
 		b.WriteString(style.Bold("Not verified") + "\n")
 		for _, u := range res.Unverified {
-			line := fmt.Sprintf("%s: %s", u.Reason, u.Feature)
+			line := fmt.Sprintf("%s: %s", u.Reason, strings.TrimRight(u.Feature, ". "))
 			if u.Object != nil {
 				line += " (" + u.Object.String() + ")"
 			}
 			if u.Detail != "" {
-				line += ". " + u.Detail
+				line += ". " + strings.ToUpper(u.Detail[:1]) + u.Detail[1:]
 			}
-			b.WriteString(wrap(line, "  ", textWidth))
+			b.WriteString(wrap(strings.TrimRight(line, ".")+".", "  ", textWidth))
 		}
 		b.WriteByte('\n')
 	}

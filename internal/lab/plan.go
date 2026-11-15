@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/asaleem9/routeparity/internal/model"
 )
@@ -37,10 +38,11 @@ const (
 )
 
 // Plan is what the lab applies to reproduce a World: the Ingresses as they
-// are, with every Service they route to replaced by the echo backend.
+// are, optionally a Gateway API configuration next to them, and every Service
+// either side routes to replaced by the echo backend.
 type Plan struct {
 	// Support holds namespaces, TLS secrets, echo Deployments and the
-	// Services that point at them. It is applied before the Ingresses.
+	// Services that point at them. It is applied before anything that routes.
 	Support []runtime.Object
 	// Ingresses are the World's Ingresses, cleaned of cluster-specific
 	// metadata, in the order ingress-nginx gives them precedence.
@@ -52,19 +54,21 @@ type Plan struct {
 	// part of what gets measured.
 	Unverified []model.Unverified
 
-	// sentinel is an echo Service port for the sentinel Ingress to route to.
+	// sentinel is an echo Service port for sentinel routes to point at.
 	sentinel *sentinelBackend
 }
 
 type sentinelBackend struct {
 	namespace string
 	service   string
-	port      networkingv1.ServiceBackendPort
+	port      int32
 }
 
-// SentinelHostSuffix ends the host of every sentinel Ingress. The .invalid
+// SentinelHostSuffix ends the host of every sentinel route. The .invalid
 // top-level domain is reserved, so it cannot collide with a real host.
 const SentinelHostSuffix = ".sentinel.routeparity.invalid"
+
+const sentinelName = "routeparity-sentinel"
 
 // Sentinel returns an Ingress for a host unique to this run, routed to one
 // of the echo Services. It is applied after everything else. Once
@@ -82,7 +86,7 @@ func (p *Plan) Sentinel(nonce string) (*networkingv1.Ingress, string) {
 	pathType := networkingv1.PathTypePrefix
 	return &networkingv1.Ingress{
 		TypeMeta:   metav1.TypeMeta{APIVersion: networkingv1.SchemeGroupVersion.String(), Kind: "Ingress"},
-		ObjectMeta: metav1.ObjectMeta{Namespace: p.sentinel.namespace, Name: "routeparity-sentinel"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: p.sentinel.namespace, Name: sentinelName},
 		Spec: networkingv1.IngressSpec{
 			IngressClassName: &class,
 			Rules: []networkingv1.IngressRule{{
@@ -92,7 +96,7 @@ func (p *Plan) Sentinel(nonce string) (*networkingv1.Ingress, string) {
 						Path:     "/",
 						PathType: &pathType,
 						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-							Name: p.sentinel.service, Port: p.sentinel.port,
+							Name: p.sentinel.service, Port: networkingv1.ServiceBackendPort{Number: p.sentinel.port},
 						}},
 					}},
 				}},
@@ -101,31 +105,134 @@ func (p *Plan) Sentinel(nonce string) (*networkingv1.Ingress, string) {
 	}, host
 }
 
-// servicePort identifies a Service port as an Ingress names it.
-type servicePort struct {
-	service string
-	// port is the name or number exactly as written in the Ingress.
-	port string
+// GatewaySentinel is the Gateway API counterpart of Sentinel: a Gateway with
+// one listener for a host unique to this run, and an HTTPRoute sending that
+// host to an echo Service. The route is applied last.
+func (p *Plan) GatewaySentinel(nonce, className string) (gateway *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, host string) {
+	if p.sentinel == nil {
+		return nil, nil, ""
+	}
+	host = "rp-" + nonce + SentinelHostSuffix
+	hostname := gatewayv1.Hostname(host)
+	port := p.sentinel.port
+	gateway = &gatewayv1.Gateway{
+		TypeMeta:   metav1.TypeMeta{APIVersion: gatewayv1.GroupVersion.String(), Kind: "Gateway"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: p.sentinel.namespace, Name: sentinelName},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(className),
+			Listeners: []gatewayv1.Listener{{
+				Name: "sentinel", Port: 80, Protocol: gatewayv1.HTTPProtocolType, Hostname: &hostname,
+			}},
+		},
+	}
+	route = &gatewayv1.HTTPRoute{
+		TypeMeta:   metav1.TypeMeta{APIVersion: gatewayv1.GroupVersion.String(), Kind: "HTTPRoute"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: p.sentinel.namespace, Name: sentinelName},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{{Name: sentinelName}}},
+			Hostnames:       []gatewayv1.Hostname{hostname},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{BackendRef: gatewayv1.BackendRef{
+					BackendObjectReference: gatewayv1.BackendObjectReference{Name: gatewayv1.ObjectName(p.sentinel.service), Port: &port},
+				}}},
+			}},
+		},
+	}
+	return gateway, route, host
 }
 
-// BuildPlan derives the lab objects for a World.
-func BuildPlan(w *model.World, echoImage string) (*Plan, error) {
-	plan := &Plan{}
+// backendPort is one Service port that an Ingress or a route sends traffic to.
+type backendPort struct {
+	service string
+	// id names the port in echo responses: its number when that is known,
+	// otherwise its name. An Ingress may name a port "http" where the
+	// converted HTTPRoute says 80; resolving both to one id is what lets the
+	// two sides be seen to reach the same backend.
+	id string
+	// number is the Service port number, or zero when only a name is known.
+	number int32
+	// name is the Service port name, or empty when only a number is known.
+	name string
+}
 
-	// Collect, per namespace, every Service port an Ingress routes to.
-	backends := map[string]map[servicePort]bool{}
+// backendSet collects the backend ports per namespace.
+type backendSet struct {
+	world *model.World
+	ports map[string]map[string]*backendPort
+}
+
+// add records a backend given by port name or by port number, resolving one
+// to the other through the original Service when the manifests include it.
+func (s *backendSet) add(namespace, service, name string, number int32) {
+	if original, ok := s.world.Services[types.NamespacedName{Namespace: namespace, Name: service}]; ok {
+		for _, p := range original.Spec.Ports {
+			switch {
+			case number == 0 && name != "" && p.Name == name:
+				number = p.Port
+			case number != 0 && name == "" && p.Port == number:
+				name = p.Name
+			}
+		}
+	}
+	id := name
+	if number != 0 {
+		id = strconv.Itoa(int(number))
+	}
+	if id == "" {
+		return
+	}
+	if s.ports[namespace] == nil {
+		s.ports[namespace] = map[string]*backendPort{}
+	}
+	key := service + "\x00" + id
+	if existing := s.ports[namespace][key]; existing != nil {
+		if existing.name == "" {
+			existing.name = name
+		}
+		return
+	}
+	s.ports[namespace][key] = &backendPort{service: service, id: id, number: number, name: name}
+}
+
+func (s *backendSet) sorted(namespace string) []*backendPort {
+	out := make([]*backendPort, 0, len(s.ports[namespace]))
+	for _, p := range s.ports[namespace] {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].service != out[j].service {
+			return out[i].service < out[j].service
+		}
+		return out[i].id < out[j].id
+	})
+	return out
+}
+
+// BuildPlan derives the lab objects for a World. candidate is the Gateway
+// API configuration to run next to the Ingresses, or nil to reproduce the
+// Ingresses alone.
+func BuildPlan(w *model.World, candidate *Candidate, echoImage string) (*Plan, error) {
+	plan := &Plan{}
+	backends := &backendSet{world: w, ports: map[string]map[string]*backendPort{}}
+	secrets := map[types.NamespacedName]map[string]bool{}
+	namespaces := map[string]bool{}
+	wantSecret := func(key types.NamespacedName, hosts ...string) {
+		if secrets[key] == nil {
+			secrets[key] = map[string]bool{}
+		}
+		for _, host := range hosts {
+			if host != "" {
+				secrets[key][host] = true
+			}
+		}
+		namespaces[key.Namespace] = true
+	}
+
 	note := func(ing *networkingv1.Ingress, b *networkingv1.IngressBackend, where string) {
 		ref := model.IngressRef(ing)
 		switch {
 		case b.Service != nil:
-			port := b.Service.Port.Name
-			if port == "" {
-				port = strconv.Itoa(int(b.Service.Port.Number))
-			}
-			if backends[ing.Namespace] == nil {
-				backends[ing.Namespace] = map[servicePort]bool{}
-			}
-			backends[ing.Namespace][servicePort{service: b.Service.Name, port: port}] = true
+			backends.add(ing.Namespace, b.Service.Name, b.Service.Port.Name, b.Service.Port.Number)
 		case b.Resource != nil:
 			plan.Unverified = append(plan.Unverified, model.Unverified{
 				Reason:  model.ReasonUnsupported,
@@ -135,10 +242,9 @@ func BuildPlan(w *model.World, echoImage string) (*Plan, error) {
 			})
 		}
 	}
-
-	secrets := map[types.NamespacedName]map[string]bool{}
 	for i := range w.Ingresses {
 		ing := &w.Ingresses[i]
+		namespaces[ing.Namespace] = true
 		if ing.Spec.DefaultBackend != nil {
 			note(ing, ing.Spec.DefaultBackend, "the default backend")
 		}
@@ -151,15 +257,8 @@ func BuildPlan(w *model.World, echoImage string) (*Plan, error) {
 			}
 		}
 		for _, tls := range ing.Spec.TLS {
-			if tls.SecretName == "" {
-				continue
-			}
-			key := types.NamespacedName{Namespace: ing.Namespace, Name: tls.SecretName}
-			if secrets[key] == nil {
-				secrets[key] = map[string]bool{}
-			}
-			for _, host := range tls.Hosts {
-				secrets[key][host] = true
+			if tls.SecretName != "" {
+				wantSecret(types.NamespacedName{Namespace: ing.Namespace, Name: tls.SecretName}, tls.Hosts...)
 			}
 		}
 		clean, unverified := labIngress(ing)
@@ -167,9 +266,12 @@ func BuildPlan(w *model.World, echoImage string) (*Plan, error) {
 		plan.Unverified = append(plan.Unverified, unverified...)
 	}
 
-	namespaces := map[string]bool{}
-	for i := range w.Ingresses {
-		namespaces[w.Ingresses[i].Namespace] = true
+	if candidate != nil {
+		plan.Unverified = append(plan.Unverified, candidate.backends(backends, wantSecret, namespaces)...)
+	}
+
+	for _, ns := range sortedKeys(backends.ports) {
+		namespaces[ns] = true
 	}
 	for _, ns := range sortedKeys(namespaces) {
 		plan.Support = append(plan.Support, &corev1.Namespace{
@@ -191,27 +293,10 @@ func BuildPlan(w *model.World, echoImage string) (*Plan, error) {
 		plan.Support = append(plan.Support, secret)
 	}
 
-	for _, ns := range sortedKeys(backends) {
-		ports := make([]servicePort, 0, len(backends[ns]))
-		for sp := range backends[ns] {
-			ports = append(ports, sp)
-		}
-		sort.Slice(ports, func(i, j int) bool {
-			if ports[i].service != ports[j].service {
-				return ports[i].service < ports[j].service
-			}
-			return ports[i].port < ports[j].port
-		})
-		deployment, services := echoBackends(w, ns, ports, echoImage)
+	for _, ns := range sortedKeys(backends.ports) {
+		deployment, services, first := echoBackends(ns, backends.sorted(ns), echoImage)
 		if plan.sentinel == nil {
-			first := ports[0]
-			backend := &sentinelBackend{namespace: ns, service: first.service}
-			if n, err := strconv.Atoi(first.port); err == nil {
-				backend.port.Number = int32(n)
-			} else {
-				backend.port.Name = first.port
-			}
-			plan.sentinel = backend
+			plan.sentinel = first
 		}
 		plan.Support = append(plan.Support, deployment)
 		for _, svc := range services {
@@ -232,9 +317,10 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 // echoBackends builds one echo Deployment for a namespace and a Service for
-// each Service name the Ingresses route to. Each (Service, port) gets its own
-// echo port, which is how a response says which Service it stands in for.
-func echoBackends(w *model.World, namespace string, ports []servicePort, image string) (*appsv1.Deployment, []*corev1.Service) {
+// each Service name that is routed to. Each backend port gets its own echo
+// port, which is how a response says which Service port it stands in for. It
+// also returns the first of them as a target for sentinel routes.
+func echoBackends(namespace string, ports []*backendPort, image string) (*appsv1.Deployment, []*corev1.Service, *sentinelBackend) {
 	labels := map[string]string{"app.kubernetes.io/name": echoName}
 	container := corev1.Container{
 		Name:            "echo",
@@ -253,21 +339,40 @@ func echoBackends(w *model.World, namespace string, ports []servicePort, image s
 
 	byService := map[string]*corev1.Service{}
 	var services []*corev1.Service
-	for i, sp := range ports {
+	var first *sentinelBackend
+	for i, bp := range ports {
 		echoPort := int32(echoFirstPort + i)
-		container.Args = append(container.Args, "--listen", fmt.Sprintf("%s/%s:%s=:%d", namespace, sp.service, sp.port, echoPort))
+		container.Args = append(container.Args, "--listen", fmt.Sprintf("%s/%s:%s=:%d", namespace, bp.service, bp.id, echoPort))
 
-		svc := byService[sp.service]
+		svc := byService[bp.service]
 		if svc == nil {
 			svc = &corev1.Service{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-				ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: sp.service},
+				ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: bp.service},
 				Spec:       corev1.ServiceSpec{Selector: labels},
 			}
-			byService[sp.service] = svc
+			byService[bp.service] = svc
 			services = append(services, svc)
 		}
-		svc.Spec.Ports = append(svc.Spec.Ports, servicePortSpec(w, namespace, sp, echoPort))
+		spec := corev1.ServicePort{
+			Name:       bp.name,
+			Port:       bp.number,
+			TargetPort: intstr.FromInt32(echoPort),
+			Protocol:   corev1.ProtocolTCP,
+		}
+		if spec.Port == 0 {
+			// Only the name is known. The name is what gets resolved, so
+			// any number serves.
+			spec.Port = echoPort
+		}
+		if spec.Name == "" {
+			// Port names are required as soon as a Service has two ports.
+			spec.Name = "p" + bp.id
+		}
+		svc.Spec.Ports = append(svc.Spec.Ports, spec)
+		if first == nil {
+			first = &sentinelBackend{namespace: namespace, service: bp.service, port: spec.Port}
+		}
 	}
 
 	replicas := int32(1)
@@ -283,32 +388,7 @@ func echoBackends(w *model.World, namespace string, ports []servicePort, image s
 			},
 		},
 	}
-	return deployment, services
-}
-
-// servicePortSpec builds the Service port an Ingress backend resolves to. A
-// backend that names a port number needs that number; one that names a port
-// by name needs that name, with the number taken from the original Service
-// when the manifests include it.
-func servicePortSpec(w *model.World, namespace string, sp servicePort, echoPort int32) corev1.ServicePort {
-	spec := corev1.ServicePort{TargetPort: intstr.FromInt32(echoPort), Protocol: corev1.ProtocolTCP}
-	if n, err := strconv.Atoi(sp.port); err == nil {
-		spec.Port = int32(n)
-		// Port names must be unique within a Service and are required as
-		// soon as it has more than one port.
-		spec.Name = "p" + sp.port
-		return spec
-	}
-	spec.Name = sp.port
-	spec.Port = echoPort
-	if original, ok := w.Services[types.NamespacedName{Namespace: namespace, Name: sp.service}]; ok {
-		for _, p := range original.Spec.Ports {
-			if p.Name == sp.port {
-				spec.Port = p.Port
-			}
-		}
-	}
-	return spec
+	return deployment, services, first
 }
 
 // strippedAnnotation describes ingress-nginx annotations the lab removes,

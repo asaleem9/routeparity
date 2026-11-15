@@ -214,6 +214,48 @@ func (r sslRedirect) Audit(w *model.World) []model.Finding {
 	return out
 }
 
+// hsts covers the Strict-Transport-Security header ingress-nginx adds.
+type hsts struct {
+	noProbes
+	noExplain
+}
+
+func (hsts) Meta() Meta {
+	return Meta{
+		ID:       "NGX-TLS-002",
+		Title:    "HTTPS responses carry an HSTS header",
+		Severity: model.SeverityMedium,
+		Summary: "For a host with TLS, ingress-nginx adds Strict-Transport-Security: max-age=31536000; includeSubDomains to " +
+			"HTTPS responses by default. The header comes from the controller's settings, not from the Ingress or the " +
+			"backend, so nothing in the manifests shows it. A Gateway sends it only if a route adds it. Browsers that " +
+			"have seen the header keep using HTTPS until it expires, so losing it is not visible straight away.",
+		References: []string{"https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/configmap/"},
+	}
+}
+
+func (r hsts) Audit(w *model.World) []model.Finding {
+	var out []model.Finding
+	m := r.Meta()
+	for _, h := range w.Hosts {
+		if !h.TLS {
+			continue
+		}
+		out = append(out, model.Finding{
+			RuleID:     m.ID,
+			Severity:   m.Severity,
+			Confidence: model.ConfidencePredicted,
+			Host:       h.DisplayName(),
+			Message: "ingress-nginx adds a Strict-Transport-Security header to HTTPS responses for this host unless the " +
+				"controller's ConfigMap turns hsts off. The Gateway needs a filter to send it.",
+			Fix: &model.Fix{
+				Summary: "Add the header on the routes attached to the HTTPS listener.",
+				Snippet: "filters:\n- type: ResponseHeaderModifier\n  responseHeaderModifier:\n    set:\n    - name: Strict-Transport-Security\n      value: max-age=31536000; includeSubDomains\n",
+			},
+		})
+	}
+	return out
+}
+
 // pathConflict covers the same host and path being claimed by two Ingresses.
 type pathConflict struct {
 	noProbes

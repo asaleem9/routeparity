@@ -1,0 +1,51 @@
+# Reported: secure.example.com, which has TLS, once however many paths it has.
+# Not reported: plain.example.com, which has none.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: secure
+  namespace: demo
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - secure.example.com
+    secretName: cert
+  rules:
+  - host: secure.example.com
+    http:
+      paths:
+      - path: "/"
+        pathType: Prefix
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+      - path: "/api"
+        pathType: Prefix
+        backend:
+          service:
+            name: api
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: plain
+  namespace: demo
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: plain.example.com
+    http:
+      paths:
+      - path: "/"
+        pathType: Prefix
+        backend:
+          service:
+            name: web
+            port:
+              number: 80

@@ -1,15 +1,21 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/asaleem9/routeparity/internal/convert"
 	"github.com/asaleem9/routeparity/internal/lab"
+	"github.com/asaleem9/routeparity/internal/model"
 	"github.com/asaleem9/routeparity/internal/probe"
+	"github.com/asaleem9/routeparity/internal/source"
 )
 
 const (
@@ -40,6 +46,7 @@ func newLabCommand(streams Streams) *cobra.Command {
 			"any cluster of yours.\n\n" +
 			"It needs Docker (or Podman or nerdctl) running.",
 	}
+	cmd.AddCommand(newLabRunCommand(streams))
 	cmd.AddCommand(newLabRecordCommand(streams))
 	cmd.AddCommand(newLabDownCommand(streams))
 	return cmd
@@ -163,4 +170,186 @@ func newLabDownCommand(streams Streams) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&clusterName, "name", lab.DefaultClusterName, "name of the kind cluster to delete")
 	return cmd
+}
+
+func newLabRunCommand(streams Streams) *cobra.Command {
+	var (
+		world          worldFlags
+		send           sendFlags
+		compare        compareFlags
+		clusterName    string
+		echoImage      string
+		keep           bool
+		noMutations    bool
+		samples        int
+		gatewayFiles   []string
+		emitter        string
+		implementation string
+		saveBaseline   string
+		saveCandidate  string
+	)
+	cmd := &cobra.Command{
+		Use:   "run -f FILE... [--gateway FILE...]",
+		Short: "Compare ingress-nginx with a Gateway implementation, on a local cluster",
+		Long: "run starts a kind cluster with ingress-nginx and a Gateway API implementation side by\n" +
+			"side, puts the same echo backends behind both, sends each probe through each, and\n" +
+			"reports where they differ: in what the client received and in what the backend received.\n\n" +
+			"The Gateway configuration comes from --gateway, or from Gateway API objects among the\n" +
+			"-f manifests. With neither, your Ingresses are converted with ingress2gateway and the\n" +
+			"result is what gets tested.\n\n" +
+			"A difference here is measured, not predicted. The lab runs the final ingress-nginx\n" +
+			"release with default settings; your controller's version and ConfigMap may differ.\n\n" +
+			"Exit status is the same as for `routeparity diff`.",
+		Example: "  routeparity lab run -f ingress/                          # test what ingress2gateway produces\n" +
+			"  routeparity lab run -f ingress/ --gateway gateway/       # test the routes you wrote\n" +
+			"  routeparity lab run -f ingress/ --emitter envoy-gateway --markdown summary.md",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := compare.validate(); err != nil {
+				return err
+			}
+			if samples < 1 {
+				return errors.New("--samples must be at least 1")
+			}
+			impl, ok := lab.ImplementationByName(implementation)
+			if !ok {
+				return fmt.Errorf("unknown --implementation %q: the lab can run %s", implementation, strings.Join(lab.ImplementationNames(), ", "))
+			}
+			opts, err := send.options()
+			if err != nil {
+				return err
+			}
+			w, err := world.load(streams)
+			if err != nil {
+				return err
+			}
+			candidate, err := resolveCandidate(cmd.Context(), streams, w, gatewayFiles, emitter)
+			if err != nil {
+				return err
+			}
+			if echoImage == "" {
+				echoImage = defaultEchoImage(Version())
+			}
+
+			start := time.Now()
+			base, cand, err := lab.Run(cmd.Context(), w, candidate, impl, lab.Options{
+				ClusterName: clusterName,
+				EchoImage:   echoImage,
+				Keep:        keep,
+				Probes:      probe.Options{Mutations: !noMutations, Samples: samples},
+				Send:        opts,
+				ToolVersion: Version(),
+				Progress: func(format string, args ...any) {
+					fmt.Fprintf(streams.Err, "[%3ds] %s\n", int(time.Since(start).Seconds()), fmt.Sprintf(format, args...))
+				},
+			})
+			if err != nil {
+				return err
+			}
+			if err := requireResponses("ingress-nginx in the lab", base); err != nil {
+				return err
+			}
+			if err := requireResponses(impl.Name+" in the lab", cand); err != nil {
+				return err
+			}
+			if saveBaseline != "" {
+				if err := writeFile(saveBaseline, base.Write); err != nil {
+					return err
+				}
+			}
+			if saveCandidate != "" {
+				if err := writeFile(saveCandidate, cand.Write); err != nil {
+					return err
+				}
+			}
+			fmt.Fprintln(streams.Err)
+			return compare.finish(streams, base, cand)
+		},
+	}
+	world.add(cmd)
+	send.addWithDefaults(cmd, 8, 0)
+	compare.add(cmd)
+	addSamplesFlag(cmd, &samples)
+	cmd.Flags().StringSliceVar(&gatewayFiles, "gateway", nil,
+		"file or directory with the Gateway API configuration to test (repeatable); without it the Ingresses are converted")
+	cmd.Flags().StringVar(&emitter, "emitter", "standard",
+		"ingress2gateway emitter to convert with when no Gateway configuration is given (standard, envoy-gateway)")
+	cmd.Flags().StringVar(&implementation, "implementation", lab.EnvoyGateway.Name,
+		"Gateway API implementation to run: "+strings.Join(lab.ImplementationNames(), ", "))
+	cmd.Flags().StringVar(&clusterName, "name", lab.DefaultClusterName, "name of the kind cluster to create or reuse")
+	cmd.Flags().StringVar(&echoImage, "echo-image", "",
+		"echo backend image; a local Docker image of this name is copied into the cluster (default: the image matching this build)")
+	cmd.Flags().BoolVar(&keep, "keep", false, "leave the cluster running afterwards, which makes the next run much faster")
+	cmd.Flags().BoolVar(&noMutations, "no-mutations", false,
+		"only request the paths written in the manifests; by default the lab also sends variations of each path")
+	cmd.Flags().StringVar(&saveBaseline, "save-baseline", "", "also write the ingress-nginx snapshot to this file")
+	cmd.Flags().StringVar(&saveCandidate, "save-candidate", "", "also write the Gateway snapshot to this file")
+	return cmd
+}
+
+// resolveCandidate decides which Gateway configuration a lab run tests: the
+// files given with --gateway, else Gateway API objects found among the -f
+// manifests, else the converter's output for the Ingresses.
+func resolveCandidate(ctx context.Context, streams Streams, w *model.World, gatewayFiles []string, emitter string) (*lab.Candidate, error) {
+	if len(gatewayFiles) > 0 {
+		loaded, err := source.LoadPaths(gatewayFiles, streams.In)
+		if err != nil {
+			return nil, err
+		}
+		for _, warning := range loaded.Warnings {
+			fmt.Fprintf(streams.Err, "warning: %s\n", warning)
+		}
+		candidate := &lab.Candidate{
+			Gateways:   loaded.Objects.Gateways,
+			HTTPRoutes: loaded.Objects.HTTPRoutes,
+			Other:      loaded.Objects.GatewayExtras,
+			Source:     "the --gateway manifests",
+		}
+		if candidate.Empty() {
+			return nil, fmt.Errorf("the --gateway manifests contain no Gateway and no HTTPRoute")
+		}
+		return candidate, nil
+	}
+
+	if len(w.Gateways) > 0 || len(w.HTTPRoutes) > 0 {
+		return &lab.Candidate{
+			Gateways:   w.Gateways,
+			HTTPRoutes: w.HTTPRoutes,
+			Other:      w.GatewayExtras,
+			Source:     "the Gateway API objects in the manifests",
+		}, nil
+	}
+
+	manifests, err := convert.Manifests(w)
+	if err != nil {
+		return nil, err
+	}
+	out, err := convert.InProcess{}.Convert(ctx, bytes.NewReader(manifests), convert.Options{IngressClass: w.IngressClass, Emitter: emitter})
+	if err != nil {
+		return nil, fmt.Errorf("the Ingresses could not be converted, so there is no Gateway configuration to test; "+
+			"write one and pass it with --gateway: %w", err)
+	}
+	candidate := &lab.Candidate{
+		Gateways:   out.Gateways,
+		HTTPRoutes: out.HTTPRoutes,
+		Other:      out.Other,
+		Source:     fmt.Sprintf("%s (%s emitter)", out.Converter, emitter),
+	}
+	// What the converter says it did not translate is, by its own account,
+	// missing from the configuration under test.
+	for _, n := range out.Notices {
+		if n.Level != "WARNING" && n.Level != "ERROR" {
+			continue
+		}
+		u := model.Unverified{Reason: model.ReasonNotConverted, Feature: n.Message, Detail: "reported by ingress2gateway"}
+		if len(n.Objects) > 0 {
+			ref := n.Objects[0]
+			u.Object = &ref
+		}
+		candidate.Unverified = append(candidate.Unverified, u)
+	}
+	if candidate.Empty() {
+		return nil, errors.New("ingress2gateway produced no Gateway and no HTTPRoute for these Ingresses")
+	}
+	return candidate, nil
 }

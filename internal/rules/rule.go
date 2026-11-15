@@ -63,6 +63,7 @@ func All() []Rule {
 		trailingSlashRedirect{},
 		urlNormalisation{},
 		sslRedirect{},
+		hsts{},
 		pathConflict{},
 		converterNotice{},
 	}

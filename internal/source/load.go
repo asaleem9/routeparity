@@ -186,6 +186,9 @@ func (res *Result) add(u *unstructured.Unstructured, origin string) error {
 		defaultNamespace(&route.Namespace)
 		res.Objects.HTTPRoutes = append(res.Objects.HTTPRoutes, route)
 
+	case gatewayGroups[gvk.Group]:
+		res.Objects.GatewayExtras = append(res.Objects.GatewayExtras, *u)
+
 	default:
 		key := gvk.Kind
 		if gvk.Group != "" {
@@ -194,6 +197,15 @@ func (res *Result) add(u *unstructured.Unstructured, origin string) error {
 		res.Ignored[key]++
 	}
 	return nil
+}
+
+// gatewayGroups are the API groups whose objects make up a Gateway
+// configuration: Gateway API itself, its experimental group, and the groups
+// of the implementations the lab can run.
+var gatewayGroups = map[string]bool{
+	gatewayv1.GroupName:           true,
+	"gateway.networking.x-k8s.io": true,
+	"gateway.envoyproxy.io":       true,
 }
 
 // convert fills a typed object. A field the type does not know is reported as

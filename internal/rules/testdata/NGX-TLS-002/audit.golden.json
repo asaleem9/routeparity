@@ -1,0 +1,13 @@
+[
+  {
+    "ruleID": "NGX-TLS-002",
+    "severity": "medium",
+    "confidence": "predicted",
+    "host": "secure.example.com",
+    "message": "ingress-nginx adds a Strict-Transport-Security header to HTTPS responses for this host unless the controller's ConfigMap turns hsts off. The Gateway needs a filter to send it.",
+    "fix": {
+      "summary": "Add the header on the routes attached to the HTTPS listener.",
+      "snippet": "filters:\n- type: ResponseHeaderModifier\n  responseHeaderModifier:\n    set:\n    - name: Strict-Transport-Security\n      value: max-age=31536000; includeSubDomains\n"
+    }
+  }
+]
