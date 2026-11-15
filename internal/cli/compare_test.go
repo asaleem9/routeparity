@@ -202,14 +202,25 @@ func TestLiveFindsEachDivergenceBetweenTwoProxies(t *testing.T) {
 			if diff := cmp.Diff([]string{"routed", "client.status", "backend.reached"}, deltaFields(c)); diff != "" {
 				t.Errorf("/aaa deltas (-want +got):\n%s", diff)
 			}
+			if c.Finding == nil || c.Finding.RuleID != "NGX-REGEX-001" || c.Finding.Fix == nil ||
+				!strings.Contains(c.Finding.Fix.Snippet, `(?i)/[A-Z]{3}.*`) {
+				t.Errorf("/aaa finding = %+v, want NGX-REGEX-001 with the case-insensitive match", c.Finding)
+			}
 		case "regex.example.com //AAA":
 			want := []model.Delta{{Field: "backend.rawTarget", Baseline: "//AAA", Candidate: "/AAA"}}
 			if diff := cmp.Diff(want, c.Deltas); diff != "" {
 				t.Errorf("//AAA deltas (-want +got):\n%s", diff)
 			}
+			if c.Finding == nil || c.Finding.RuleID != "NGX-NORM-001" || c.Finding.Fix == nil {
+				t.Errorf("//AAA finding = %+v, want NGX-NORM-001 with a fix", c.Finding)
+			}
 		case "slash.example.com /app":
 			if c.Probe.Origin.RuleID != "NGX-SLASH-001" {
 				t.Errorf("/app is attributed to %q, want NGX-SLASH-001", c.Probe.Origin.RuleID)
+			}
+			if c.Finding == nil || c.Finding.RuleID != "NGX-SLASH-001" || c.Finding.Fix == nil ||
+				!strings.Contains(c.Finding.Fix.Snippet, `"/app/"`) {
+				t.Errorf("/app finding = %+v, want NGX-SLASH-001 redirecting to /app/", c.Finding)
 			}
 		}
 	}
@@ -271,6 +282,10 @@ func TestLiveTextReport(t *testing.T) {
 		"client.location",
 		"Differences recorded and not counted",
 		"The candidate behaves differently from the baseline on",
+		"fix: Match the path as a case-insensitive regular expression",
+		"written for envoy",
+		"Coverage",
+		"baseline routed",
 	} {
 		if !strings.Contains(got.stdout, want) {
 			t.Errorf("report lacks %q:\n%s", want, got.stdout)

@@ -193,7 +193,8 @@ func newLabRunCommand(streams Streams) *cobra.Command {
 		Short: "Compare ingress-nginx with a Gateway implementation, on a local cluster",
 		Long: "run starts a kind cluster with ingress-nginx and a Gateway API implementation side by\n" +
 			"side, puts the same echo backends behind both, sends each probe through each, and\n" +
-			"reports where they differ: in what the client received and in what the backend received.\n\n" +
+			"reports where they differ: in what the client received and in what the backend received.\n" +
+			"Each difference names the behaviour that caused it and, where one exists, a change that removes it.\n\n" +
 			"The Gateway configuration comes from --gateway, or from Gateway API objects among the\n" +
 			"-f manifests. With neither, your Ingresses are converted with ingress2gateway and the\n" +
 			"result is what gets tested.\n\n" +
@@ -263,7 +264,7 @@ func newLabRunCommand(streams Streams) *cobra.Command {
 				}
 			}
 			fmt.Fprintln(streams.Err)
-			return compare.finish(streams, base, cand)
+			return compare.finish(streams, base, cand, w)
 		},
 	}
 	world.add(cmd)

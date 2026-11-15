@@ -45,6 +45,26 @@ func sampleResult() *diff.Result {
 	}
 }
 
+// withExplanation is sampleResult plus the explanation a regex difference carries.
+func withExplanation() *diff.Result {
+	res := sampleResult()
+	res.Comparisons[1].Finding = &model.Finding{
+		RuleID:     "NGX-REGEX-001",
+		Confidence: model.ConfidenceConfirmed,
+		Message:    "The baseline routed this request and the candidate did not.",
+		Fix: &model.Fix{
+			Summary:        "Match the path as a case-insensitive regular expression.",
+			Implementation: "envoy",
+			Snippet:        "matches:\n- path:\n    type: RegularExpression\n    value: \"(?i)/[A-Z]{3}.*\"\n",
+		},
+	}
+	res.Coverage = []model.Coverage{{
+		RuleID: "NGX-REGEX-001", Title: "Regex paths match case-insensitively and as a prefix",
+		Probes: 1, Routed: 1, Diffs: 1, Status: model.CoverageDiffers,
+	}}
+	return res
+}
+
 func parseJUnit(t *testing.T, data []byte) junitSuite {
 	t.Helper()
 	var suites junitSuites
@@ -134,9 +154,49 @@ func TestDiffJUnitEscapesRequestTargets(t *testing.T) {
 	}
 }
 
+func TestDiffJUnitIncludesTheExplanation(t *testing.T) {
+	var buf bytes.Buffer
+	if err := DiffJUnit(&buf, withExplanation(), false); err != nil {
+		t.Fatal(err)
+	}
+	suite := parseJUnit(t, buf.Bytes())
+	var body string
+	for _, c := range suite.Cases {
+		if c.Failure != nil {
+			body = c.Failure.Body
+		}
+	}
+	for _, want := range []string{"NGX-REGEX-001: The baseline routed", "fix: Match the path"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("failure body lacks %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestDiffTextIncludesTheExplanation(t *testing.T) {
+	var buf bytes.Buffer
+	if err := DiffText(&buf, withExplanation(), Plain); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"The baseline routed this request and the candidate did not.",
+		"fix: Match the path as a case-insensitive regular expression.",
+		"written for envoy",
+		`value: "(?i)/[A-Z]{3}.*"`,
+		"Coverage",
+		"NGX-REGEX-001",
+		"baseline routed 1, 1 differ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report lacks %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestDiffMarkdown(t *testing.T) {
 	var buf bytes.Buffer
-	if err := DiffMarkdown(&buf, sampleResult()); err != nil {
+	if err := DiffMarkdown(&buf, withExplanation()); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -151,6 +211,11 @@ func TestDiffMarkdown(t *testing.T) {
 		"|  |  | `backend.reached` | `demo/web:80` | `not reached` |",
 		"### Not compared",
 		"| `GET http://shop.example.com/configured` | UNROUTED | neither target routes this request |",
+		"### Explanations",
+		"The baseline routed this request and the candidate did not.",
+		"fix: Match the path as a case-insensitive regular expression. Written for envoy.",
+		"### Coverage",
+		"| `NGX-REGEX-001` | differs | baseline routed 1, 1 differ |",
 		"<summary>Not verified (1)</summary>",
 		"| no-probe | `shop.example.com /foo(?=bar) (Ingress/demo/pcre)` | cannot generate a path |",
 		"<summary>Differences recorded and not counted (2 fields)</summary>",

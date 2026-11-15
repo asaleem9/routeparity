@@ -88,6 +88,16 @@ func DiffJUnit(w io.Writer, res *diff.Result, strict bool) error {
 			if origin != "" {
 				lines = append([]string{origin}, lines...)
 			}
+			if c.Finding != nil {
+				if c.Finding.RuleID != "" {
+					lines = append(lines, c.Finding.RuleID+": "+c.Finding.Message)
+				} else {
+					lines = append(lines, c.Finding.Message)
+				}
+				if c.Finding.Fix != nil {
+					lines = append(lines, "fix: "+c.Finding.Fix.Summary)
+				}
+			}
 			tc.Failure = &junitOutcome{
 				Message: "differs in " + strings.Join(summary, ", "),
 				Type:    string(model.VerdictDiff),
@@ -163,12 +173,52 @@ func DiffMarkdown(w io.Writer, res *diff.Result) error {
 			}
 		}
 		b.WriteByte('\n')
+		var explained []model.Comparison
+		for _, c := range differing {
+			if c.Finding != nil {
+				explained = append(explained, c)
+			}
+		}
+		if len(explained) > 0 {
+			b.WriteString("### Explanations\n\n")
+			for _, c := range explained {
+				f := c.Finding
+				rule := f.RuleID
+				if rule == "" {
+					rule = "unclassified"
+				}
+				fmt.Fprintf(&b, "**%s** · %s\n\n%s\n\n", mdCode(requestLine(c.Probe)), rule, mdText(f.Message))
+				if f.Fix == nil {
+					continue
+				}
+				fix := "fix: " + f.Fix.Summary
+				if f.Fix.Implementation != "" {
+					fix += " Written for " + f.Fix.Implementation + "."
+				}
+				b.WriteString(mdText(fix) + "\n\n")
+				if f.Fix.Snippet != "" {
+					b.WriteString("```yaml\n" + f.Fix.Snippet)
+					if !strings.HasSuffix(f.Fix.Snippet, "\n") {
+						b.WriteByte('\n')
+					}
+					b.WriteString("```\n\n")
+				}
+			}
+		}
 	}
 
 	if len(unchecked) > 0 {
 		b.WriteString("### Not compared\n\n| Request | Verdict | Why |\n|---|---|---|\n")
 		for _, c := range unchecked {
 			fmt.Fprintf(&b, "| %s | %s | %s |\n", mdCode(requestLine(c.Probe)), c.Verdict, mdText(c.Reason))
+		}
+		b.WriteByte('\n')
+	}
+
+	if len(res.Coverage) > 0 {
+		b.WriteString("### Coverage\n\n| Rule | Status | Detail |\n|---|---|---|\n")
+		for _, c := range res.Coverage {
+			fmt.Fprintf(&b, "| %s | %s | %s |\n", mdCode(c.RuleID), c.Status, mdText(coverageDetail(c)))
 		}
 		b.WriteByte('\n')
 	}

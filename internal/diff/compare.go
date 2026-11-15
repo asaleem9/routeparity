@@ -76,6 +76,9 @@ type Result struct {
 	// Suppressed counts, per field, the differences that were recorded and
 	// not treated as divergences.
 	Suppressed map[string]int `json:"suppressed,omitempty"`
+	// Coverage says, per rule, whether this run checked that behaviour.
+	// It is filled in by rules.Annotate, after Compare.
+	Coverage []model.Coverage `json:"coverage,omitempty"`
 }
 
 // Clean reports whether the comparison found nothing wrong and left nothing
