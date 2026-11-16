@@ -1,0 +1,47 @@
+# Publishes routeparity when a vX.Y.Z tag is pushed. The release workflow
+# runs this, then builds and signs the echo image. Do not tag from a branch.
+version: 2
+
+project_name: routeparity
+
+builds:
+  - main: ./cmd/routeparity
+    binary: routeparity
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      # .Tag keeps the v prefix. The lab uses it to select the echo image.
+      - -s -w -X github.com/asaleem9/routeparity/internal/cli.version={{ .Tag }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [tar.gz]
+
+checksum:
+  name_template: checksums.txt
+
+# Keyless cosign. The workflow installs cosign before `goreleaser release`.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes
+    artifacts: checksum
+
+release:
+  github:
+    owner: asaleem9
+    name: routeparity
+
+changelog:
+  use: git

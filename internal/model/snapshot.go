@@ -68,6 +68,9 @@ const (
 	ReasonStatistical UnverifiedReason = "statistical"
 	// ReasonUnsupported means the tool does not handle the feature yet.
 	ReasonUnsupported UnverifiedReason = "unsupported"
+	// ReasonNotExercised means the configuration predicts a behaviour, or
+	// probes for it were sent, and the run never saw the baseline do it.
+	ReasonNotExercised UnverifiedReason = "not-exercised"
 )
 
 // Unverified records something a run could not check. A run with any

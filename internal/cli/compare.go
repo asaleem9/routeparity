@@ -15,6 +15,7 @@ import (
 	"github.com/asaleem9/routeparity/internal/model"
 	"github.com/asaleem9/routeparity/internal/prober"
 	"github.com/asaleem9/routeparity/internal/report"
+	"github.com/asaleem9/routeparity/internal/rules"
 )
 
 func newProbesCommand(streams Streams) *cobra.Command {
@@ -198,12 +199,15 @@ func writeFile(path string, write func(io.Writer) error) error {
 
 // finish prints the comparison, writes any extra reports, and turns the
 // result into an exit status.
-func (f *compareFlags) finish(streams Streams, base, cand *model.Snapshot) error {
+func (f *compareFlags) finish(streams Streams, base, cand *model.Snapshot, w *model.World) error {
 	res := diff.Compare(base, cand, diff.Options{
 		CompareBody:    f.compareBody,
 		IgnoreHeaders:  f.ignoreHeaders,
 		CompareHeaders: f.compareHeaders,
 	})
+	// w is nil for diff and verify: the snapshots carry the probes, and the
+	// manifests are not required. Explanations then omit path-specific fixes.
+	rules.Annotate(res, w)
 	junit := func(w io.Writer) error { return report.DiffJUnit(w, res, f.strict) }
 	markdown := func(w io.Writer) error { return report.DiffMarkdown(w, res) }
 
@@ -263,7 +267,7 @@ func newDiffCommand(streams Streams) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return compare.finish(streams, base, cand)
+			return compare.finish(streams, base, cand, nil)
 		},
 	}
 	compare.add(cmd)
@@ -357,7 +361,7 @@ func newLiveCommand(streams Streams) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return compare.finish(streams, base, cand)
+			return compare.finish(streams, base, cand, w)
 		},
 	}
 	world.add(cmd)
@@ -443,7 +447,7 @@ func newVerifyCommand(streams Streams) *cobra.Command {
 					return err
 				}
 			}
-			return compare.finish(streams, base, cand)
+			return compare.finish(streams, base, cand, nil)
 		},
 	}
 	send.add(cmd)

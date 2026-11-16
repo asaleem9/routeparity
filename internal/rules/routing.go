@@ -14,7 +14,7 @@ import (
 
 // trailingSlashRedirect covers the redirect nginx adds for a location that
 // ends in a slash.
-type trailingSlashRedirect struct{ noExplain }
+type trailingSlashRedirect struct{}
 
 func (trailingSlashRedirect) Meta() Meta {
 	return Meta{
@@ -118,7 +118,7 @@ func coveringPrefix(prefixes []string, path string) string {
 }
 
 // urlNormalisation covers path normalisation before matching.
-type urlNormalisation struct{ noExplain }
+type urlNormalisation struct{}
 
 func (urlNormalisation) Meta() Meta {
 	return Meta{
@@ -152,7 +152,6 @@ func (r urlNormalisation) Audit(w *model.World) []model.Finding {
 // with TLS.
 type sslRedirect struct {
 	noProbes
-	noExplain
 }
 
 func (sslRedirect) Meta() Meta {
@@ -217,7 +216,6 @@ func (r sslRedirect) Audit(w *model.World) []model.Finding {
 // hsts covers the Strict-Transport-Security header ingress-nginx adds.
 type hsts struct {
 	noProbes
-	noExplain
 }
 
 func (hsts) Meta() Meta {
@@ -259,7 +257,6 @@ func (r hsts) Audit(w *model.World) []model.Finding {
 // pathConflict covers the same host and path being claimed by two Ingresses.
 type pathConflict struct {
 	noProbes
-	noExplain
 }
 
 func (pathConflict) Meta() Meta {

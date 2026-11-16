@@ -14,6 +14,7 @@ import (
 	"github.com/asaleem9/routeparity/internal/diff"
 	"github.com/asaleem9/routeparity/internal/lab"
 	"github.com/asaleem9/routeparity/internal/model"
+	"github.com/asaleem9/routeparity/internal/rules"
 	"github.com/asaleem9/routeparity/internal/source"
 )
 
@@ -37,6 +38,7 @@ func compare(t *testing.T, w *model.World, candidate *lab.Candidate) map[string]
 		t.Fatalf("lab.Run: %v", err)
 	}
 	res := diff.Compare(base, cand, diff.Options{})
+	rules.Annotate(res, w)
 	if res.Summary.Error != 0 || res.Summary.Unrouted != 0 || res.Summary.Unverified != 0 {
 		t.Errorf("summary = %+v; every probe should have been answered and compared", res.Summary)
 	}
@@ -170,8 +172,23 @@ func TestLiteralRoutes(t *testing.T) {
 		"http://regex-match.example.com//AAA":       "NGX-NORM-001",
 	}
 	for request, rule := range rules {
-		if got[request].Probe.Origin.RuleID != rule {
-			t.Errorf("%s is attributed to %q, want %s", request, got[request].Probe.Origin.RuleID, rule)
+		c := got[request]
+		if c.Probe.Origin.RuleID != rule {
+			t.Errorf("%s is attributed to %q, want %s", request, c.Probe.Origin.RuleID, rule)
+		}
+		if c.Finding == nil || c.Finding.RuleID != rule || c.Finding.Fix == nil || c.Finding.Fix.Summary == "" {
+			t.Errorf("%s finding = %+v, want a confirmed %s fix", request, c.Finding, rule)
+		}
+	}
+	// These probes are taken from the configuration, so the rule is not on
+	// the probe. The difference itself is what identifies it.
+	for request, rule := range map[string]string{
+		"http://path-normalization.example.com/uuid":  "NGX-TLS-001",
+		"https://path-normalization.example.com/uuid": "NGX-TLS-002",
+	} {
+		c := got[request]
+		if c.Finding == nil || c.Finding.RuleID != rule || c.Finding.Fix == nil {
+			t.Errorf("%s finding = %+v, want a %s fix", request, c.Finding, rule)
 		}
 	}
 }

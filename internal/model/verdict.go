@@ -37,6 +37,9 @@ type Comparison struct {
 	Suppressed []Delta `json:"suppressed,omitempty"`
 	// Reason explains UNROUTED, UNVERIFIED and ERROR verdicts.
 	Reason string `json:"reason,omitempty"`
+	// Finding is the rule's explanation of a difference, when one applies.
+	// It is absent for every other verdict.
+	Finding *Finding `json:"finding,omitempty"`
 }
 
 // Severity ranks how much a finding matters.
@@ -98,4 +101,29 @@ type Finding struct {
 	Message    string     `json:"message"`
 	Evidence   []string   `json:"evidence,omitempty"`
 	Fix        *Fix       `json:"fix,omitempty"`
+}
+
+// CoverageStatus says whether a run checked a catalogued behaviour.
+type CoverageStatus string
+
+const (
+	// CoverageDiffers means at least one checked request differed.
+	CoverageDiffers CoverageStatus = "differs"
+	// CoverageMatches means the behaviour was checked and nothing differed.
+	CoverageMatches CoverageStatus = "matches"
+	// CoverageNotExercised means the behaviour was predicted, or probes for it
+	// were sent, and the baseline never showed it.
+	CoverageNotExercised CoverageStatus = "not-exercised"
+)
+
+// Coverage is one rule's share of a comparison.
+type Coverage struct {
+	RuleID string `json:"ruleID"`
+	Title  string `json:"title"`
+	// Probes is how many comparisons were counted toward the rule.
+	Probes int `json:"probes"`
+	// Routed is how many of those the baseline routed.
+	Routed int            `json:"routed"`
+	Diffs  int            `json:"diffs"`
+	Status CoverageStatus `json:"status"`
 }

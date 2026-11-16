@@ -31,9 +31,21 @@ type Rule interface {
 	// Probes returns requests that exercise the behaviour. Each carries the
 	// rule's ID in its origin.
 	Probes(w *model.World) []model.Probe
-	// Explain turns a comparison on one of the rule's probes into a finding,
-	// or returns nil when the comparison shows no divergence the rule covers.
-	Explain(c model.Comparison, w *model.World) *model.Finding
+	// Explain turns an observed difference into a finding, or returns nil when
+	// the comparison shows no divergence the rule covers. Scope carries the
+	// manifests, when they are available, and the candidate's implementation
+	// family, which selects the fix.
+	Explain(c model.Comparison, s Scope) *model.Finding
+}
+
+// Scope is what an explanation is allowed to consult beyond the comparison
+// itself. World is nil when the manifests are not available, as with a diff
+// of two snapshot files. Family is empty when the candidate implementation
+// is unknown.
+type Scope struct {
+	World *model.World
+	// Family is an implementation family such as "envoy", or empty.
+	Family string
 }
 
 // References shared by several rules.
@@ -52,7 +64,7 @@ func (noProbes) Probes(*model.World) []model.Probe { return nil }
 // noExplain is embedded by rules whose explanations are not written yet.
 type noExplain struct{}
 
-func (noExplain) Explain(model.Comparison, *model.World) *model.Finding { return nil }
+func (noExplain) Explain(model.Comparison, Scope) *model.Finding { return nil }
 
 // All returns every rule, ordered by ID.
 func All() []Rule {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/asaleem9/routeparity/internal/diff"
 	"github.com/asaleem9/routeparity/internal/model"
+	"github.com/asaleem9/routeparity/internal/rules"
 )
 
 // DiffJSON writes a comparison as indented JSON.
@@ -59,6 +60,7 @@ func DiffText(w io.Writer, res *diff.Result, style Style) error {
 		for _, d := range c.Deltas {
 			fmt.Fprintf(&b, "%s%-*s  %s  →  %s\n", diffIndent, width, d.Field, d.Baseline, d.Candidate)
 		}
+		writeFinding(&b, c, style)
 		b.WriteByte('\n')
 	}
 
@@ -97,9 +99,66 @@ func DiffText(w io.Writer, res *diff.Result, style Style) error {
 		b.WriteByte('\n')
 	}
 
+	if len(res.Coverage) > 0 {
+		b.WriteString(style.Bold("Coverage") + "\n")
+		for _, c := range res.Coverage {
+			fmt.Fprintf(&b, "  %-16s  %-14s  %s\n", c.RuleID, c.Status, coverageDetail(c))
+		}
+		b.WriteByte('\n')
+	}
+
 	b.WriteString(conclusion(res, style))
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// writeFinding prints the explanation and the fix under a difference. The
+// rule id is repeated only when the probe itself does not already name it,
+// which is how an HSTS difference on an ordinary request stays attributable.
+func writeFinding(b *strings.Builder, c model.Comparison, style Style) {
+	f := c.Finding
+	if f == nil {
+		return
+	}
+	if f.RuleID != "" && f.RuleID != c.Probe.Origin.RuleID {
+		title := f.RuleID
+		for _, rule := range rules.All() {
+			if rule.Meta().ID == f.RuleID {
+				title = rule.Meta().Title
+				break
+			}
+		}
+		fmt.Fprintf(b, "%s%s  %s\n", diffIndent, style.Bold(f.RuleID), title)
+	}
+	b.WriteString(wrap(f.Message, diffIndent, textWidth))
+	if f.Fix == nil {
+		return
+	}
+	b.WriteString(wrap("fix: "+f.Fix.Summary, diffIndent, textWidth))
+	if f.Fix.Implementation != "" {
+		b.WriteString(wrap("written for "+f.Fix.Implementation, diffIndent, textWidth))
+	}
+	for _, line := range strings.Split(strings.TrimRight(f.Fix.Snippet, "\n"), "\n") {
+		if line != "" {
+			b.WriteString(diffIndent + "    " + style.Dim(line) + "\n")
+		}
+	}
+}
+
+func coverageDetail(c model.Coverage) string {
+	switch c.Status {
+	case model.CoverageDiffers:
+		return fmt.Sprintf("baseline routed %d, %d differ", c.Routed, c.Diffs)
+	case model.CoverageMatches:
+		return fmt.Sprintf("baseline routed %d", c.Routed)
+	case model.CoverageNotExercised:
+		if c.Probes == 0 {
+			return "predicted from the manifests, and no request checked it"
+		}
+		return "the baseline routed none of them"
+	default:
+		return ""
+	}
 }
 
 const diffIndent = "            " // aligns under the request, past the verdict column

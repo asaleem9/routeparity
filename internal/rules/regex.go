@@ -52,7 +52,7 @@ func regexFix(path string) *model.Fix {
 }
 
 // regexSemantics covers paths whose own Ingress opted into regex matching.
-type regexSemantics struct{ noExplain }
+type regexSemantics struct{}
 
 func (regexSemantics) Meta() Meta {
 	return Meta{
@@ -89,7 +89,7 @@ func (r regexSemantics) Audit(w *model.World) []model.Finding {
 
 // regexLeak covers paths that are matched as regexes only because a different
 // Ingress on the same host turned regex mode on.
-type regexLeak struct{ noExplain }
+type regexLeak struct{}
 
 func (regexLeak) Meta() Meta {
 	return Meta{
@@ -128,7 +128,7 @@ func (r regexLeak) Audit(w *model.World) []model.Finding {
 
 // rewriteImpliesRegex covers paths whose Ingress sets rewrite-target without
 // use-regex.
-type rewriteImpliesRegex struct{ noExplain }
+type rewriteImpliesRegex struct{}
 
 func (rewriteImpliesRegex) Meta() Meta {
 	return Meta{

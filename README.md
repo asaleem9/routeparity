@@ -13,15 +13,11 @@ This is early, and it works end to end:
 - `routeparity live` sends the same requests to two endpoints you already have and compares what each did. `record`, `diff` and `verify` do the same with a snapshot file in between, with JUnit and Markdown reports for CI.
 - `routeparity lab record` saves how real ingress-nginx treats your Ingresses, so you still have a reference once the controller is gone.
 
-The lab runs Envoy Gateway only for now, and there is no tagged release yet. The [roadmap](#roadmap) has what's next.
+The lab runs Envoy Gateway only for now. Tagging v0.1.0 publishes signed binaries and the echo image. That tag is not cut yet. The [roadmap](#roadmap) has what's next.
 
 ## Install
 
-```sh
-go install github.com/asaleem9/routeparity/cmd/routeparity@latest
-```
-
-Or build from source with Go 1.25.5 or newer:
+There is no release tag yet. Build from this repo with Go 1.25.5 or newer:
 
 ```sh
 git clone https://github.com/asaleem9/routeparity.git
@@ -29,9 +25,11 @@ cd routeparity
 make build        # writes bin/routeparity
 ```
 
+Pushing a `vX.Y.Z` tag publishes signed binaries for Linux and macOS, and the echo image `ghcr.io/asaleem9/routeparity-echo` at that tag. The checksum file is signed with cosign. After that tag, `go install github.com/asaleem9/routeparity/cmd/routeparity@latest` installs the release.
+
 ## Compare both on your laptop
 
-This needs Docker and, until the first release, the echo image built with `make echo-image`. Nothing touches a cluster of yours, and your kubeconfig is neither read nor written.
+This needs Docker. A binary whose version is `vX.Y.Z` pulls `ghcr.io/asaleem9/routeparity-echo` at that version. Any other build, including one from this checkout, looks for `routeparity-echo:dev`, so run `make echo-image` first. Nothing touches a cluster of yours, and your kubeconfig is neither read nor written.
 
 ```console
 $ routeparity lab run -f examples/five-behaviours/
@@ -52,10 +50,22 @@ routeparity diff  ingress-nginx (ingress-nginx, kind cluster routeparity-lab)  �
 DIFF        GET https://path-normalization.example.com/uuid
             from the configuration  ·  Ingress/demo/path-normalization
             client.header.strict-transport-security  max-age=31536000; includeSubDomains  →  
+            NGX-TLS-002  HTTPS responses carry an HSTS header
+            On this HTTPS response the baseline sent max-age=31536000; includeSubDomains and the
+            candidate sent none. ingress-nginx adds Strict-Transport-Security by default for a host
+            with TLS. The Ingress does not mention the header, so a translation does not add it either.
+            fix: Add the header on the routes attached to the HTTPS listener.
 
 DIFF        GET http://regex-match.example.com//AAA
             NGX-NORM-001, double-slash  ·  Ingress/demo/regex-match
             backend.rawTarget  //AAA  →  /AAA
+            Both sides routed this request. The baseline forwarded the path as the client sent it
+            (//AAA) and the candidate forwarded /AAA. ingress-nginx matches on a normalised path and
+            forwards the original.
+            fix: Envoy Gateway merges slashes, resolves dot segments and percent-decodes the path
+            before forwarding, and an HTTPRoute cannot restore the original. A backend that depends
+            on the path as the client sent it has to accept the normalised path.
+            written for envoy
 
 ...
 
@@ -68,8 +78,8 @@ With only `-f`, the Gateway side is what [ingress2gateway](https://github.com/ku
 That run is the converter's output, measured. It says three things:
 
 - The converter gets the hard parts right on Envoy Gateway. Case-insensitive regex matching, regex mode leaking across Ingresses, `rewrite-target`, the trailing-slash redirect and the redirect to HTTPS all match. Its own behaviour tests run on Istio, so this was not a given.
-- Sixteen probes return the same status and differ at the backend. ingress-nginx forwards `//AAA` as sent; Envoy Gateway forwards `/AAA`. An application that logs, signs or routes on the raw path sees a change.
-- ingress-nginx adds an HSTS header to HTTPS responses and the Gateway does not. Nothing in the Ingress asks for that header, and the converter does not mention it. I found it by running this.
+- Sixteen probes return the same status and differ at the backend. ingress-nginx forwards `//AAA` as sent; Envoy Gateway forwards `/AAA`. An application that logs, signs or routes on the raw path sees a change. No HTTPRoute puts the original path back, and the report says so.
+- ingress-nginx adds an HSTS header to HTTPS responses and the Gateway does not. Nothing in the Ingress asks for that header, and the converter does not mention it. I found it by running this. The fix is a `ResponseHeaderModifier` on the HTTPS routes.
 
 To test routes you wrote yourself, pass them with `--gateway`. The example below copies each Ingress path into an HTTPRoute match and adds nothing else, which is what a careful person does by hand:
 
@@ -83,17 +93,35 @@ DIFF        GET http://regex-match.example.com/hEADER
             routed           routed  →  not routed
             client.status    200  →  404
             backend.reached  demo/httpbin:8000  →  not reached
+            The baseline routed this request and the candidate did not. The request differs from the
+            configured path only in letter case. This Ingress did not ask for regex matching. Another
+            Ingress on the host did, and ingress-nginx then matches every path on the host that way.
+            A literal Exact or PathPrefix match does not.
+            fix: Match the path as a case-insensitive regular expression that also accepts longer paths.
+            RegularExpression support and syntax are implementation-specific, so confirm your Gateway
+            accepts the (?i) flag.
+            written for envoy
+                matches:
+                - path:
+                    type: RegularExpression
+                    value: "(?i)/Header.*"
 
 DIFF        GET http://trailing-slash.example.com/my-path
             NGX-SLASH-001, strip-slash  ·  Ingress/demo/trailing-slash
             routed           routed  →  not routed
             client.status    301  →  404
             client.location  http://trailing-slash.example.com/my-path/  →  
+            The baseline redirected the slashless path to the path with the slash, and the candidate
+            did not. ingress-nginx adds that redirect for an Exact or Prefix path that ends in a slash.
+            Gateway API does not, so the redirect has to be written as a filter.
+            fix: Add a rule that redirects the slashless path.
 
 ...
 ```
 
-The paths written in the manifests all match, which is why that translation looks finished. The 25 differences are one step away from them, and each names the rule that explains it: `routeparity explain NGX-REGEX-002`.
+The paths written in the manifests all match, which is why that translation looks finished. The 25 differences are one step away from them. Each one says which behaviour caused it and, where a route can remove it, the change to make. `routeparity explain NGX-REGEX-002` is the same behaviour, read from the manifests before any request is sent.
+
+A run also prints Coverage: each rule, whether the probes differed or matched, and which rules the manifests predicted but no request checked. A rule in that last group is listed under Not verified as well, and `--strict` exits 2.
 
 `--keep` leaves the cluster running. The second run above took 35 seconds that way, against 67 for the first. `routeparity lab down` deletes it. `--emitter envoy-gateway` converts with that emitter instead, and `--junit`, `--markdown` and `--strict` work as they do for `verify`.
 
@@ -307,7 +335,7 @@ Things to know before you rely on it:
 - It needs Docker running. It creates its own kind cluster and never reads or writes your kubeconfig. `--keep` leaves the cluster up, which cuts the next run to around ten seconds; `routeparity lab down` deletes it.
 - It runs ingress-nginx 1.15.1, the final release, with default settings. If your controller is older or has a customised ConfigMap, its behaviour can differ from what the lab records.
 - Annotations that need something the lab doesn't have are removed before applying and listed as not verified: external authentication, source-range allow lists, rate limits, snippets, and anything that makes the backend speak a protocol other than HTTP. The paths under those Ingresses are still recorded, without the removed behaviour.
-- Until there is a release with a published image, build the echo image first with `make echo-image`.
+- A binary that is not a `vX.Y.Z` release looks for `routeparity-echo:dev`. Build it with `make echo-image`. A release binary uses `ghcr.io/asaleem9/routeparity-echo` at the same version.
 - Against a real Gateway, `verify` compares the client's side only. What the Gateway forwards to the backend is only visible with the echo behind it, which is what `lab run` sets up.
 
 ## What it doesn't do yet
@@ -316,13 +344,13 @@ Things to know before you rely on it:
 - It sends GET requests. Behaviour that only shows on other methods or on request bodies, such as a body size limit or a CORS preflight, is not exercised.
 - A path behind a weighted canary is requested ten times. If the answers vary, which they should, it is reported as `UNVERIFIED`. Checking that the split itself is the same on both sides needs a statistical comparison, which isn't there. Canaries selected by header or cookie aren't probed with that header or cookie yet.
 - Patterns that only PCRE accepts, such as lookaheads, can't be turned into a matching path. They are listed as not verified.
-- It doesn't explain a difference beyond naming the rule. Fix suggestions are in `audit` for now.
-- The lab runs Envoy Gateway 1.10.0 only. Other implementations match regular expressions and normalise paths differently, so a result for one says little about another.
+- Where Envoy Gateway changes the path before forwarding it, no HTTPRoute puts the original path back. Applying the other printed fixes does not clear that difference.
+- The lab runs Envoy Gateway 1.10.0 only. Other implementations match regular expressions and normalise paths differently, so a result for one says little about another. A fix written for Envoy is labelled, and the Envoy snippet is left out for a different implementation.
 - The lab probes HTTP and HTTPS on ports 80 and 443. Listeners on other ports are applied and not probed.
 
 ## Roadmap
 
-1. Explanations and fixes attached to each observed difference, and a first tagged release with binaries and a published echo image.
+1. Tag v0.1.0. Pushing that tag publishes the signed binaries and `ghcr.io/asaleem9/routeparity-echo`. An unreleased build still needs `make echo-image`.
 2. NGINX Gateway Fabric and Istio in the lab.
 3. A published table of how each implementation differs from ingress-nginx, regenerated on a schedule.
 
