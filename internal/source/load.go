@@ -206,6 +206,11 @@ var gatewayGroups = map[string]bool{
 	gatewayv1.GroupName:           true,
 	"gateway.networking.x-k8s.io": true,
 	"gateway.envoyproxy.io":       true,
+	"gateway.nginx.org":           true,
+	"networking.istio.io":         true,
+	"security.istio.io":           true,
+	"telemetry.istio.io":          true,
+	"extensions.istio.io":         true,
 }
 
 // convert fills a typed object. A field the type does not know is reported as

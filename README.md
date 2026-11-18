@@ -13,7 +13,7 @@ This is early, and it works end to end:
 - `routeparity live` sends the same requests to two endpoints you already have and compares what each did. `record`, `diff` and `verify` do the same with a snapshot file in between, with JUnit and Markdown reports for CI.
 - `routeparity lab record` saves how real ingress-nginx treats your Ingresses, so you still have a reference once the controller is gone.
 
-The lab runs Envoy Gateway only for now. Tagging v0.1.0 publishes signed binaries and the echo image. That tag is not cut yet. The [roadmap](#roadmap) has what's next.
+The lab runs Envoy Gateway, NGINX Gateway Fabric, and Istio. Tagging v0.1.0 publishes signed binaries and the echo image. That tag is not cut yet. The [roadmap](#roadmap) has what's next.
 
 ## Install
 
@@ -126,6 +126,44 @@ A run also prints Coverage: each rule, whether the probes differed or matched, a
 `--keep` leaves the cluster running. The second run above took 35 seconds that way, against 67 for the first. `routeparity lab down` deletes it. `--emitter envoy-gateway` converts with that emitter instead, and `--junit`, `--markdown` and `--strict` work as they do for `verify`.
 
 What the lab cannot stand in for is listed under "Not verified" in every report: [the list is below](#record-ingress-nginx-on-your-laptop).
+
+## Compare Gateway implementations
+
+Envoy Gateway is the default. Select another implementation with:
+
+```sh
+routeparity lab run -f examples/five-behaviours/ --implementation nginx-gateway-fabric
+routeparity lab run -f examples/five-behaviours/ --implementation istio
+```
+
+The same `--gateway` option tests your own routes. The lab assigns its own GatewayClass and proxy provisioning settings; route policies are carried through. All three implementations install from embedded manifests, including their Gateway API CRDs. NGINX Gateway Fabric's control plane and each Gateway's proxy communicate with the upstream certificate generator's mTLS certificates; the lab needs no cert-manager installation.
+
+The compatibility matrix measures all three implementations in two views: the literal HTTPRoutes in this repository, and ingress2gateway's standard-emitter output. A rejected route is kept in the report with its controller's reason. A rule with no baseline hits is marked **not exercised**.
+
+In measurements recorded November 16–17, 2026, against ingress-nginx 1.15.1, each view sent 40 probes:
+
+| Gateway configuration | Envoy Gateway 1.10.0 | NGINX Gateway Fabric 2.8.1 | Istio 1.32.0 |
+|---|---|---|---|
+| Literal HTTPRoutes | 15 match, 25 differ | 23 match, 17 differ | 14 match, 26 differ |
+| ingress2gateway standard emitter | 23 match, 17 differ | 14 match, 26 differ | 22 match, 18 differ |
+
+NGINX Gateway Fabric supplies the trailing-slash redirect and preserves the raw path on accepted routes. It rejects the converter's `(?i)` patterns, so more routes differ after conversion than in the literal translation. The report includes those rejected routes and their reasons; these counts do not establish parity. Matrix rows group probes by their generating rule, so rejected routes can affect several rows.
+
+Istio resolves dot segments and decodes unreserved percent-encoded characters, but its defaults do not merge repeated slashes. A doubled slash that Envoy Gateway normalises can therefore miss the route on Istio. The [upstream findings](docs/upstream-findings.md) include minimal reproductions and existing issue links.
+
+To reproduce the nightly workflow locally, after `make build echo-image`:
+
+```sh
+python3 hack/run_matrix.py envoy-gateway
+python3 hack/run_matrix.py nginx-gateway-fabric
+python3 hack/run_matrix.py istio
+python3 hack/render_matrix.py matrix --output matrix/README.md
+python3 hack/build_matrix_site.py matrix --output dist/matrix
+```
+
+Kept lab clusters are bound to their Gateway implementation and versions, because different Gateway API bundles cannot safely replace one another. To switch implementations, use a different `--name` or remove the old cluster with `lab down`.
+
+Each matrix run creates and removes its own named lab cluster. `matrix/` holds the three-column Markdown report, full comparisons, and both sides' snapshots for each view. Nightly runs attach the files to the [Compatibility matrix workflow](https://github.com/asaleem9/routeparity/actions/workflows/matrix.yml) and print the table in the job summary. The same workflow builds an interactive GitHub Pages site with rule filters, request evidence, downloads and fourteen measured runs of history. The [site guide](docs/matrix-site.md) covers local preview and enabling Pages for this repository.
 
 ## Audit your manifests
 
@@ -345,20 +383,23 @@ Things to know before you rely on it:
 - A path behind a weighted canary is requested ten times. If the answers vary, which they should, it is reported as `UNVERIFIED`. Checking that the split itself is the same on both sides needs a statistical comparison, which isn't there. Canaries selected by header or cookie aren't probed with that header or cookie yet.
 - Patterns that only PCRE accepts, such as lookaheads, can't be turned into a matching path. They are listed as not verified.
 - Where Envoy Gateway changes the path before forwarding it, no HTTPRoute puts the original path back. Applying the other printed fixes does not clear that difference.
-- The lab runs Envoy Gateway 1.10.0 only. Other implementations match regular expressions and normalise paths differently, so a result for one says little about another. A fix written for Envoy is labelled, and the Envoy snippet is left out for a different implementation.
+- The lab runs Envoy Gateway 1.10.0, NGINX Gateway Fabric 2.8.1, and Istio 1.32.0. A result holds for the implementation and version measured. Fixes written for Envoy are labelled, and their snippets are left out for NGINX Gateway Fabric.
+- For NGINX Gateway Fabric and Istio, each Gateway has its own proxy. The lab selects a proxy using route hostnames and parent references, checks its readiness, and records it separately. A request that could target multiple independent Gateways is refused before cluster creation; run those configurations separately.
 - The lab probes HTTP and HTTPS on ports 80 and 443. Listeners on other ports are applied and not probed.
 
 ## Roadmap
 
 1. Tag v0.1.0. Pushing that tag publishes the signed binaries and `ghcr.io/asaleem9/routeparity-echo`. An unreleased build still needs `make echo-image`.
-2. NGINX Gateway Fabric and Istio in the lab.
-3. A published table of how each implementation differs from ingress-nginx, regenerated on a schedule.
+2. Enable the prepared GitHub Pages deployment for the measured matrix.
+3. Access-log replay, a GitHub Action, and HTML reports (weeks 10–11).
+
+The complete [twelve-week plan](docs/roadmap.md) records the milestones. The [compatibility matrix workflow](.github/workflows/matrix.yml) measures Envoy Gateway, NGINX Gateway Fabric, and Istio nightly and retains reports and replayable snapshots.
 
 ## Development
 
 ```sh
-make test      # unit and golden tests
-make e2e       # the lab against a real kind cluster; needs Docker, takes about a minute
+make test      # unit, golden and matrix report tests
+make e2e       # the lab against a real kind cluster; needs Docker, takes a few minutes
 make lint      # golangci-lint
 make golden    # regenerate golden files, then read the diff before committing
 ```

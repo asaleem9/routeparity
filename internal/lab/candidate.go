@@ -130,7 +130,7 @@ func (c *Candidate) labObjects(className string) (objs []*unstructured.Unstructu
 	for i := range c.Other {
 		u := c.Other[i].DeepCopy()
 		switch u.GetKind() {
-		case "GatewayClass", "EnvoyProxy":
+		case "GatewayClass", "EnvoyProxy", "NginxProxy":
 			// The lab runs its own class and proxy settings.
 			continue
 		}

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Measured Gateway API behavior across Envoy Gateway, NGINX Gateway Fabric and Istio, with versions, request evidence and replayable snapshots.">
+  <title>Gateway compatibility matrix · routeparity</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#matrix">Skip to comparison</a>
+  <header class="site-header"><div class="header-inner">
+    <a class="brand" href="./" aria-label="routeparity home"><span class="brand-icon" aria-hidden="true">⇄</span>routeparity<span class="brand-section">/ matrix</span></a>
+    <a class="repo-link" href="https://github.com/asaleem9/routeparity">View on GitHub <span aria-hidden="true">↗</span></a>
+  </div></header>
+  <main>
+    <section class="intro">
+      <p class="eyebrow"><span class="live-dot" aria-hidden="true"></span>Measured routing behavior</p>
+      <h1>Gateway compatibility matrix</h1>
+      <p class="lede">See what changes when ingress-nginx routes move to Envoy Gateway, NGINX Gateway Fabric, or Istio. Every result comes with the requests behind it.</p>
+      <div class="run-bar"><label>Recorded run <select id="run-select" disabled><option>Loading measurements…</option></select></label><span id="run-meta" class="mono"></span><a id="download-report" class="text-link" hidden>Download report ↓</a></div>
+    </section>
+    <div id="load-error" class="error-box" role="alert" hidden></div>
+    <div id="content" hidden>
+      <section class="source-controls" aria-label="Route source"><div class="tabs" role="tablist" aria-label="Gateway configuration">
+        <button id="tab-literal" role="tab" aria-selected="true" aria-controls="results" data-view="literal">Literal routes</button>
+        <button id="tab-converted" role="tab" aria-selected="false" aria-controls="results" data-view="converted">ingress2gateway output</button>
+      </div><p id="source-description"></p></section>
+      <section id="results" role="tabpanel" aria-labelledby="tab-literal">
+        <div id="summary-cards" class="summary-cards"></div>
+        <div class="measurement-note"><strong>Read the scope with the result.</strong> These runs use echo backends and default controller settings. A match covers the tested requests. Rejected routes can affect several rule rows; unverified features are listed with each implementation.</div>
+        <section id="matrix" class="comparison-section" aria-labelledby="matrix-title">
+          <div class="section-heading"><div><p class="eyebrow">Behavior by rule</p><h2 id="matrix-title">Compare implementations</h2></div><div class="filters"><label class="search-label"><span class="sr-only">Find a rule</span><input id="rule-search" type="search" placeholder="Find a rule…"></label><label><span class="sr-only">Filter results</span><select id="status-filter"><option value="all">All results</option><option value="differs">Has differences</option><option value="matches">Has matches</option><option value="not-exercised">Not exercised</option></select></label></div></div>
+          <div class="comparison-grid"><div class="table-wrap"><table id="comparison-table"><caption class="sr-only">Rule coverage for each Gateway implementation. Select a result to inspect its evidence.</caption><thead></thead><tbody></tbody></table><p id="no-results" class="empty-state" hidden>No rules match these filters.</p><p class="table-hint">Select a result to inspect requests and differences.</p></div>
+            <aside id="evidence" aria-live="polite" aria-atomic="false"><div class="evidence-heading"><p class="eyebrow">Request evidence</p><h3 id="evidence-title">Select a result</h3><p id="evidence-meta"></p></div><div id="evidence-body"></div></aside>
+          </div>
+        </section>
+        <section class="limitations-section" aria-labelledby="limitations-title"><div class="section-heading"><div><p class="eyebrow">Coverage and limitations</p><h2 id="limitations-title">What remains unverified</h2></div><span id="limitations-count" class="mono"></span></div><div id="limitations-list"></div></section>
+      </section>
+      <section class="reproduce"><div><p class="eyebrow">Reproduce a measurement</p><h2>Run the same comparison locally</h2><p>Use your own Ingress manifests, or start with the fixture behind this matrix.</p></div><pre><code>routeparity lab run -f examples/five-behaviours/ \
+  --implementation istio</code></pre><a class="text-link" href="https://github.com/asaleem9/routeparity#compare-gateway-implementations">Read the lab instructions ↗</a></section>
+    </div>
+  </main>
+  <footer><span>routeparity · Apache-2.0</span><nav aria-label="More information"><a href="https://github.com/asaleem9/routeparity/actions/workflows/matrix.yml">Measurement history</a><a href="https://github.com/asaleem9/routeparity/blob/main/docs/upstream-findings.md">Upstream findings</a></nav></footer>
+</body>
+</html>
