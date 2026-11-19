@@ -1,12 +1,12 @@
 # Standard emitter: document or warn about regex output rejected by NGINX Gateway Fabric
 
-Target repository: `kubernetes-sigs/ingress2gateway`
+Upstream report: [kubernetes-sigs/ingress2gateway #424](https://github.com/kubernetes-sigs/ingress2gateway/issues/424)
 
 ## What happened
 
 Using ingress2gateway v1.2.0 with the ingress-nginx provider and standard emitter, the Ingress below produces a `RegularExpression` match with value `(?i)/[A-Z]{3}.*`. NGINX Gateway Fabric v2.8.1 rejects the HTTPRoute with `Accepted=False`, `UnsupportedValue`.
 
-A request that ingress-nginx v1.15.1 routes to the backend (`GET /AAA`, Host `regex-portability.example.com`) then returns 404 on NGF. Both endpoints were measured with the same echo backend in isolated local kind clusters, on Kubernetes v1.35.8. There were no transport errors.
+A request that ingress-nginx v1.15.1 routes to the backend (`GET /AAA`, Host `regex-portability.example.com`) then returns 404 on NGF. Both endpoints were measured with the same echo backend in an isolated local kind cluster, on Kubernetes v1.35.8. There were no transport errors.
 
 ## Minimal input
 

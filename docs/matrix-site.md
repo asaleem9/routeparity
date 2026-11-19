@@ -21,7 +21,7 @@ Open `http://127.0.0.1:8769/`. Each implementation uses its own kind cluster, wh
 
 ## GitHub Pages
 
-The repository must use **Settings → Pages → Build and deployment → Source: GitHub Actions**. Pages was not enabled when checked on November 18, 2026. Enabling it is a repository setting change; building the site locally does not publish it.
+This repository was configured for **GitHub Actions** publishing on November 19, 2026. Its first deployment awaits the matrix workflow being merged into `main`. For a fork, select **Settings → Pages → Build and deployment → Source: GitHub Actions**. Building the site locally does not publish it.
 
 Once the workflow is on the default branch and Pages is enabled, run **Compatibility matrix** manually, or wait for its nightly schedule. The workflow:
 
@@ -33,7 +33,7 @@ Once the workflow is on the default branch and Pages is enabled, run **Compatibi
 
 The deployment job has `pages: write` and `id-token: write`; measurement jobs retain read-only repository permissions. History retrieval uses `actions: read`. A failed measurement or build leaves the last published site in place. History is recovered from retained Actions artifacts, which currently have ninety-day retention.
 
-The expected project URL after successful deployment is `https://asaleem9.github.io/routeparity/`. The workflow's deployment output is the authoritative URL.
+The configured project URL, available after successful deployment, is `https://asaleem9.github.io/routeparity/`. The workflow's deployment output is the authoritative URL.
 
 ## Interpretation
 

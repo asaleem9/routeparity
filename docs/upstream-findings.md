@@ -32,7 +32,7 @@ With ingress2gateway **1.2.0**, ingress-nginx **1.15.1**, and NGINX Gateway Fabr
 
 The NGINX Gateway Fabric HTTPRoute status reports `Accepted=False`, reason `UnsupportedValue`. Its message says the path must start with `/` and must not contain whitespace, `{`, `}` or `;`. `GET http://regex-portability.example.com/AAA` returns 200 through ingress-nginx and 404 through the Gateway. Of eight probes, seven differed, one matched, and none had transport errors.
 
-This is a concrete portability gap for the standard emitter. The intended upstream request is a warning, compatibility documentation or an implementation-specific translation; it does not assume every Gateway must implement the same regular-expression syntax. A [ready-to-file report](upstream/ngf-standard-regex.md) includes the manifest and commands.
+This is a concrete portability gap for the standard emitter. The intended upstream request is a warning, compatibility documentation or an implementation-specific translation; it does not assume every Gateway must implement the same regular-expression syntax. Filed as [ingress2gateway #424](https://github.com/kubernetes-sigs/ingress2gateway/issues/424). The [report source](upstream/ngf-standard-regex.md) includes the manifest and commands.
 
 Before preparing the report, searches in ingress2gateway covered regex handling and NGINX Gateway Fabric. [#354](https://github.com/kubernetes-sigs/ingress2gateway/issues/354) discusses case-insensitive RE2 matching; [#421](https://github.com/kubernetes-sigs/ingress2gateway/issues/421) requests an NGINX emitter for other policies. Neither retrieved report describes this measured NGF regex rejection. The draft links both to let maintainers decide whether to consolidate it.
 
