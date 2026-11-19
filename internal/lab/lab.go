@@ -106,8 +106,16 @@ func RecordBaseline(ctx context.Context, w *model.World, opts Options) (snap *mo
 // an implementation, side by side in one local cluster with the same echo
 // backends behind both, and records how each behaves.
 func Run(ctx context.Context, w *model.World, candidate *Candidate, impl Implementation, opts Options) (base, cand *model.Snapshot, err error) {
+	if err := impl.validate(); err != nil {
+		return nil, nil, err
+	}
 	if candidate.Empty() {
 		return nil, nil, errors.New("the Gateway configuration has no Gateway and no HTTPRoute, so there is nothing to compare ingress-nginx with")
+	}
+	if impl.perGateway {
+		if _, err := gatewayProbeGroups(candidate, probe.Generate(w, opts.Probes).Probes); err != nil {
+			return nil, nil, err
+		}
 	}
 	s, done, err := open(ctx, w, candidate, opts)
 	if err != nil {
@@ -185,6 +193,11 @@ func open(ctx context.Context, w *model.World, candidate *Candidate, opts Option
 // install puts the controllers and the echo backends in place and waits for
 // them. impl is nil when only ingress-nginx is needed.
 func (s *session) install(ctx context.Context, impl *Implementation) error {
+	if impl != nil {
+		if err := s.claimImplementation(ctx, *impl); err != nil {
+			return err
+		}
+	}
 	s.opts.progress("installing ingress-nginx %s", IngressNGINXVersion)
 	controller, err := decodeObjects(ingressNGINXManifest)
 	if err != nil {
@@ -331,6 +344,9 @@ func (s *session) baseline(ctx context.Context) (*model.Snapshot, error) {
 
 // candidate applies the Gateway configuration and records the implementation.
 func (s *session) candidate(ctx context.Context, impl Implementation, candidate *Candidate) (*model.Snapshot, error) {
+	if impl.perGateway {
+		return s.candidatePerGateway(ctx, impl, candidate)
+	}
 	class, err := decodeObjects([]byte(impl.class))
 	if err != nil {
 		return nil, fmt.Errorf("%s GatewayClass: %w", impl.Name, err)
@@ -426,7 +442,13 @@ func (s *session) waitForProxy(ctx context.Context, impl Implementation) (*corev
 			last = "no Service matches " + impl.proxySelector
 			return false, nil
 		}
+		if len(services.Items) != 1 {
+			return false, fmt.Errorf("%s proxy selector %q matches %d Services in %s; refusing to select one arbitrarily", impl.Name, impl.proxySelector, len(services.Items), impl.proxyNamespace)
+		}
 		svc := services.Items[0]
+		if len(svc.Spec.Selector) == 0 {
+			return false, fmt.Errorf("%s proxy Service %s/%s has no pod selector", impl.Name, svc.Namespace, svc.Name)
+		}
 		selector := metav1.FormatLabelSelector(&metav1.LabelSelector{MatchLabels: svc.Spec.Selector})
 		if _, err := s.k.runningPod(ctx, impl.proxyNamespace, selector); err != nil {
 			last = s.k.describePods(ctx, impl.proxyNamespace, selector)
@@ -439,7 +461,7 @@ func (s *session) waitForProxy(ctx context.Context, impl Implementation) (*corev
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("the %s proxy was not ready after %s: %s", impl.Name, proxyTimeout, last)
+		return nil, fmt.Errorf("the %s proxy was not ready: %w (%s)", impl.Name, err, last)
 	}
 	return found, nil
 }
@@ -448,6 +470,9 @@ func (s *session) waitForProxy(ctx context.Context, impl Implementation) (*corev
 // in front of it on the node ports that are published to the host. It returns
 // where to send probes. A proxy with no listener on 443 gets no HTTPS address.
 func (s *session) exposeProxy(ctx context.Context, impl Implementation) (prober.Target, error) {
+	if err := s.clearGatewayEntry(ctx); err != nil {
+		return prober.Target{}, err
+	}
 	proxy, err := s.waitForProxy(ctx, impl)
 	if err != nil {
 		return prober.Target{}, err
@@ -600,7 +625,7 @@ func (s *session) removeStale(ctx context.Context, gatewayAPI bool) error {
 			continue
 		}
 		for _, res := range list.APIResources {
-			if strings.Contains(res.Name, "/") || res.Kind == "GatewayClass" || res.Kind == "EnvoyProxy" || !hasVerbs(res.Verbs, "list", "delete") {
+			if strings.Contains(res.Name, "/") || res.Kind == "GatewayClass" || res.Kind == "EnvoyProxy" || res.Kind == "NginxProxy" || !hasVerbs(res.Verbs, "list", "delete") {
 				continue
 			}
 			client := s.k.dyn.Resource(gv.WithResource(res.Name))
@@ -624,6 +649,11 @@ var staleGroups = map[string]bool{
 	gatewayv1.GroupName:           true,
 	"gateway.networking.x-k8s.io": true,
 	"gateway.envoyproxy.io":       true,
+	"gateway.nginx.org":           true,
+	"networking.istio.io":         true,
+	"security.istio.io":           true,
+	"telemetry.istio.io":          true,
+	"extensions.istio.io":         true,
 }
 
 func hasVerbs(verbs []string, want ...string) bool {
@@ -651,10 +681,14 @@ func newNonce() (string, error) {
 // The host is new in every run, so the only configuration that can route it
 // is one built after this run's changes were applied.
 func waitForSentinel(ctx context.Context, name string, target prober.Target, host string, send prober.Options) error {
-	if target.HTTP == "" {
-		return fmt.Errorf("%s exposes no HTTP port to send the sentinel request to", name)
-	}
 	probe := model.Probe{Host: host, RawTarget: "/", Origin: model.Origin{Source: model.OriginControl, Mutation: "sentinel"}}
+	address := target.HTTP
+	if address == "" {
+		address, probe.Scheme = target.HTTPS, "https"
+	}
+	if address == "" {
+		return fmt.Errorf("%s exposes no HTTP or HTTPS port to send the sentinel request to", name)
+	}
 	if err := probe.Seal(); err != nil {
 		return err
 	}
@@ -662,7 +696,7 @@ func waitForSentinel(ctx context.Context, name string, target prober.Target, hos
 	defer cancel()
 	var last string
 	for {
-		obs := prober.Send(ctx, target.HTTP, probe, send)
+		obs := prober.Send(ctx, address, probe, send)
 		switch {
 		case obs.Backend != nil:
 			return nil

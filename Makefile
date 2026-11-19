@@ -17,8 +17,9 @@ echo-image: ## Build the lab's echo backend image for this machine's architectur
 		-o bin/echo-image/routeparity-echo-$(GOARCH) ./cmd/routeparity-echo
 	docker build -q -t $(ECHO_IMAGE) -f hack/echo.Dockerfile bin/echo-image
 
-test: ## Run unit and golden tests
+test: ## Run unit, golden and matrix report tests
 	go test ./...
+	python3 -m unittest discover -s hack -p 'test_*.py'
 
 test-race: ## Run tests with the race detector and coverage
 	go test -race -cover ./...

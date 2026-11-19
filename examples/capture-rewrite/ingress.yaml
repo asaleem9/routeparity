@@ -1,0 +1,24 @@
+# Capture-rewrite portability check, related to ingress2gateway issue #411.
+# Version 1.2.0 warns and omits this rewrite; the backend then sees /items/x
+# instead of the /x forwarded by ingress-nginx.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: capture-rewrite
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: capture.example.com
+    http:
+      paths:
+      - path: /items/(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: httpbin
+            port:
+              number: 80

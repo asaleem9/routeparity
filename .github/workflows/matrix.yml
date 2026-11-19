@@ -1,0 +1,134 @@
+name: Compatibility matrix
+
+on:
+  schedule:
+    - cron: '23 8 * * *'
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths:
+      - 'internal/lab/**'
+      - 'internal/rules/**'
+      - 'internal/probe/**'
+      - 'internal/prober/**'
+      - 'internal/diff/**'
+      - 'internal/convert/**'
+      - 'internal/model/**'
+      - 'examples/**'
+      - 'hack/*matrix*.py'
+      - 'web/matrix/**'
+      - 'internal/source/**'
+      - '.github/workflows/matrix.yml'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
+    paths:
+      - '.github/workflows/matrix.yml'
+      - 'hack/*matrix*.py'
+      - 'internal/lab/manifests/**'
+      - 'web/matrix/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compatibility-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        implementation: [envoy-gateway, nginx-gateway-fabric, istio]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build the CLI and local echo image
+        run: make build echo-image
+      - name: Measure literal and converted routes
+        run: python3 hack/run_matrix.py "${{ matrix.implementation }}"
+      - name: Retain comparisons and both snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-${{ matrix.implementation }}
+          path: matrix/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  report:
+    permissions:
+      contents: read
+      actions: read
+    needs: measure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: matrix-*
+          path: matrix
+          merge-multiple: true
+      - name: Render the three-column matrix
+        run: |
+          python3 hack/render_matrix.py matrix --output matrix/README.md
+          cat matrix/README.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-matrix
+          path: matrix/
+          retention-days: 90
+
+      - name: Locate the previous published matrix archive
+        id: previous
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous_run=$(gh api "repos/${{ github.repository }}/actions/workflows/matrix.yml/runs?branch=main&status=success&per_page=1" --jq '.workflow_runs[0].id // empty')
+          if [ -n "$previous_run" ]; then
+            archive=$(gh api "repos/${{ github.repository }}/actions/runs/$previous_run/artifacts" --jq '[.artifacts[] | select(.name == "compatibility-matrix-site" and .expired == false)] | length')
+            if [ "$archive" -gt 0 ]; then
+              echo "run_id=$previous_run" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.previous.outputs.run_id != ''
+        with:
+          name: compatibility-matrix-site
+          path: previous-site
+          run-id: ${{ steps.previous.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Build the matrix site and retain fourteen measured runs
+        run: python3 hack/build_matrix_site.py matrix --output dist/matrix --run-id "${{ github.run_id }}-${{ github.run_attempt }}" --previous previous-site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-matrix-site
+          path: dist/matrix/
+          include-hidden-files: true
+          retention-days: 90
+      - uses: actions/upload-pages-artifact@v4
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          path: dist/matrix/
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: report
+    permissions:
+      pages: write
+      id-token: write
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy the complete measured matrix
+        id: deployment
+        uses: actions/deploy-pages@v4

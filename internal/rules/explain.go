@@ -22,6 +22,10 @@ func familyOf(implementation string) string {
 	switch strings.ToLower(strings.TrimSpace(implementation)) {
 	case "envoy-gateway", familyEnvoy:
 		return familyEnvoy
+	case "nginx-gateway-fabric":
+		return "nginx"
+	case "istio":
+		return "istio"
 	default:
 		return ""
 	}
@@ -133,6 +137,8 @@ func regexFixFor(path, family string) *model.Fix {
 	switch family {
 	case familyEnvoy, "":
 		fix.Implementation = familyEnvoy
+	case "istio":
+		fix.Implementation = "istio"
 	default:
 		fix.Snippet = ""
 		fix.Implementation = family

@@ -547,6 +547,9 @@ func TestBuildPlanWithACandidate(t *testing.T) {
 
 func TestCandidateLabObjects(t *testing.T) {
 	c := candidateFrom(t, gatewayManifests)
+	for kind, apiVersion := range map[string]string{"EnvoyProxy": "gateway.envoyproxy.io/v1alpha1", "NginxProxy": "gateway.nginx.org/v1alpha2"} {
+		c.Other = append(c.Other, unstructured.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"name": "production-proxy"}}})
+	}
 	objs, gateways, routes, err := c.labObjects("routeparity")
 	if err != nil {
 		t.Fatal(err)

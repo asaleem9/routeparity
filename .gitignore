@@ -18,3 +18,7 @@ CLAUDE.local.md
 # Lab artefacts
 *.kubeconfig
 /.routeparity/
+
+# Generated compatibility measurements
+/matrix/
+__pycache__/

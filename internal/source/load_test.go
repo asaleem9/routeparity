@@ -236,6 +236,13 @@ apiVersion: gateway.networking.x-k8s.io/v1alpha1
 kind: XListenerSet
 metadata: {name: extra, namespace: shop}
 ---
+apiVersion: gateway.nginx.org/v1alpha1
+kind: ClientSettingsPolicy
+metadata: {name: client, namespace: shop}
+spec:
+  targetRefs: [{group: gateway.networking.k8s.io, kind: Gateway, name: shop}]
+  futureSetting: {anything: goes}
+---
 apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata: {name: vs, namespace: shop}
@@ -251,7 +258,7 @@ metadata: {name: vs, namespace: shop}
 	// A policy is part of the Gateway configuration even though this tool
 	// does not interpret it: a lab run that left it out would test a
 	// different configuration from the one the user wrote.
-	want := []string{"GRPCRoute", "ReferenceGrant", "SecurityPolicy", "XListenerSet"}
+	want := []string{"GRPCRoute", "ReferenceGrant", "SecurityPolicy", "XListenerSet", "ClientSettingsPolicy", "VirtualService"}
 	if strings.Join(kinds, ",") != strings.Join(want, ",") {
 		t.Errorf("carried kinds = %v, want %v", kinds, want)
 	}
@@ -259,8 +266,8 @@ metadata: {name: vs, namespace: shop}
 	if _, found := res.Objects.GatewayExtras[2].Object["spec"].(map[string]any)["futureField"]; !found {
 		t.Error("an unknown field of a carried object was dropped")
 	}
-	if res.Ignored["networking.istio.io/VirtualService"] != 1 || len(res.Ignored) != 1 {
-		t.Errorf("Ignored = %v, want only the VirtualService", res.Ignored)
+	if len(res.Ignored) != 0 {
+		t.Errorf("Ignored = %v, want Istio resources carried through", res.Ignored)
 	}
 	if len(res.Warnings) != 0 {
 		t.Errorf("unexpected warnings: %v", res.Warnings)

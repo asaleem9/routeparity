@@ -1,12 +1,12 @@
 //go:build e2e
 
 // Package e2e runs the lab against a real kind cluster. It needs Docker and
-// the echo image, and takes a minute or two:
+// the echo image, and takes a few minutes:
 //
 //	make e2e
 //
-// The tests share one cluster, which TestMain deletes at the end.
-// ROUTEPARITY_E2E_CLUSTER names it (default routeparity-e2e) and
+// The tests share one cluster per implementation, which TestMain deletes at the end.
+// ROUTEPARITY_E2E_CLUSTER names the prefix (default routeparity-e2e) and
 // ROUTEPARITY_E2E_KEEP=1 leaves it running, which makes the next run fast.
 package e2e
 
@@ -27,14 +27,21 @@ import (
 )
 
 // TestMain removes the cluster when the tests are done. Every test leaves it
-// running for the next, which is what makes the suite take a minute or two
-// and not a minute or two per test.
+// running for the next, which avoids paying for a cold cluster and controller installation per test.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if os.Getenv("ROUTEPARITY_E2E_KEEP") != "1" {
-		if err := lab.DeleteCluster(clusterName(), ""); err != nil && !errors.Is(err, lab.ErrNoCluster) {
-			fmt.Fprintln(os.Stderr, "could not delete the test cluster:", err)
-			code = 1
+		names := []string{clusterName()}
+		for _, impl := range lab.ImplementationNames() {
+			if impl != lab.EnvoyGateway.Name {
+				names = append(names, clusterName()+"-"+impl)
+			}
+		}
+		for _, name := range names {
+			if err := lab.DeleteCluster(name, ""); err != nil && !errors.Is(err, lab.ErrNoCluster) {
+				fmt.Fprintln(os.Stderr, "could not delete the test cluster:", err)
+				code = 1
+			}
 		}
 	}
 	os.Exit(code)

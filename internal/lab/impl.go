@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -34,10 +35,16 @@ type Implementation struct {
 	// plane that serves the lab's GatewayClass.
 	proxyNamespace string
 	proxySelector  string
+	// perGateway means each Gateway owns a separate proxy. Its Service is
+	// selected by gateway.networking.k8s.io/gateway-name in that namespace.
+	perGateway bool
 }
 
 // labGatewayClass is the GatewayClass name the lab uses for every implementation.
 const labGatewayClass = "routeparity"
+
+// Each implementation has its own class name, matching its controller.
+const nginxGatewayClass = "routeparity-nginx"
 
 // envoyGatewayManifest is install.yaml from the Envoy Gateway v1.10.0 release
 // (Apache-2.0), gzip-compressed and otherwise unmodified:
@@ -96,7 +103,108 @@ spec:
 }
 
 var implementations = map[string]Implementation{
-	EnvoyGateway.Name: EnvoyGateway,
+	EnvoyGateway.Name:       EnvoyGateway,
+	NGINXGatewayFabric.Name: NGINXGatewayFabric,
+	Istio.Name:              Istio,
+}
+
+// istioManifest contains Gateway API v1.6.1 experimental CRDs followed by
+// Istio 1.32.0's base and istiod charts, rendered with Helm. There are no
+// sidecars, CNI or ambient components; Istio provisions each Gateway's proxy.
+// See hack/vendor-istio.sh for sources, checksums and render options.
+//
+//go:embed manifests/istio.yaml.gz
+var istioManifest []byte
+
+// Istio runs a separate Envoy proxy for each Gateway. The defaults ConfigMap
+// changes only its Service type, because kind has no external load balancer.
+var Istio = Implementation{
+	Name:              "istio",
+	Version:           "v1.32.0",
+	GatewayAPIVersion: "v1.6.1",
+	ClassName:         "routeparity-istio",
+	manifest:          func() ([]byte, error) { return gunzip(istioManifest) },
+	controller:        types.NamespacedName{Namespace: "istio-system", Name: "istiod"},
+	class: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: routeparity-istio-defaults
+  namespace: istio-system
+  labels:
+    gateway.istio.io/defaults-for-class: routeparity-istio
+data:
+  service: |
+    spec:
+      type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: routeparity-istio
+spec:
+  controllerName: istio.io/gateway-controller
+`,
+	perGateway: true,
+}
+
+// nginxGatewayFabricManifest combines these unmodified upstream bundles:
+//
+// https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.3/standard-install.yaml
+// sha256 356c2b8e286a964dc20995435659ad1095386329974793af10bbfe3eff977fe5
+// https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.8.1/deploy/crds.yaml
+// sha256 a652a8cdbade3a7663de77c4b293844f2126ac0a18421310129adac61bf926af
+// https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.8.1/deploy/default/deploy.yaml
+// sha256 b0fb6c75293da684235e491a39f819d69d3e7fc0ceb08daadd8064b418d8f7b8
+//
+// The upstream certificate-generator Job provisions control/data-plane mTLS.
+// The lab changes the watched class to routeparity-nginx and the proxy Service to
+// ClusterIP. No routing or path-normalisation settings are changed.
+//
+//go:embed manifests/nginx-gateway-fabric.yaml.gz
+var nginxGatewayFabricManifest []byte
+
+// NGINXGatewayFabric runs one NGINX proxy per Gateway, unlike Envoy's shared
+// proxy. Both HTTP and HTTPS still reach the proxy through the lab's NodePorts.
+var NGINXGatewayFabric = Implementation{
+	Name:              "nginx-gateway-fabric",
+	Version:           "v2.8.1",
+	GatewayAPIVersion: "v1.6.3",
+	ClassName:         nginxGatewayClass,
+	controller:        types.NamespacedName{Namespace: "nginx-gateway", Name: "nginx-gateway"},
+	manifest: func() ([]byte, error) {
+		data, err := gunzip(nginxGatewayFabricManifest)
+		if err != nil {
+			return nil, err
+		}
+		text := strings.ReplaceAll(string(data), "--gatewayclass=nginx", "--gatewayclass="+nginxGatewayClass)
+		text = strings.ReplaceAll(text, "  name: nginx\nspec:\n  controllerName:", "  name: "+nginxGatewayClass+"\nspec:\n  controllerName:")
+		text = strings.ReplaceAll(text, "type: LoadBalancer", "type: ClusterIP")
+		text = strings.ReplaceAll(text, "      externalTrafficPolicy: Local\n", "")
+		return []byte(text), nil
+	},
+	class: `apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: ` + nginxGatewayClass + `
+spec:
+  controllerName: gateway.nginx.org/nginx-gateway-controller
+  parametersRef:
+    group: gateway.nginx.org
+    kind: NginxProxy
+    name: nginx-gateway-proxy-config
+    namespace: nginx-gateway
+`,
+	perGateway: true,
+}
+
+// validate rejects incomplete implementations before creating a cluster.
+func (i Implementation) validate() error {
+	if i.Name == "" || i.Version == "" || i.GatewayAPIVersion == "" || i.ClassName == "" || i.manifest == nil ||
+		i.controller.Namespace == "" || i.controller.Name == "" || i.class == "" ||
+		(!i.perGateway && (i.proxyNamespace == "" || i.proxySelector == "")) {
+		return fmt.Errorf("incomplete Gateway implementation %q", i.Name)
+	}
+	return nil
 }
 
 // ImplementationByName looks an implementation up by name.
